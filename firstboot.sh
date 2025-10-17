@@ -25,7 +25,7 @@ MODULE_ORDER=()
 MODULE_DEFINITIONS=(
  "Network Configuration|Modify network interface addressing and DNS.\n \nDo you want to continue?|$SCRIPT_DIR/setupnetwork.sh"
  #"Hostname Configuration|Set the system hostname and related DNS defaults.\n\nDo you want to continue?|$SCRIPT_DIR/setuphostname.sh"
- #"Firewall Configuration|Tune firewall policies and per-port allowances.\n \nDo you want to continue?|$SCRIPT_DIR/setupfirewall.sh"
+ "Firewall Configuration|Tune firewall policies and per-port allowances.\n \nDo you want to continue?|$SCRIPT_DIR/setupfirewall.sh"
  #"Logging Configuration|Configure journald persistence, limits, and optional forwarding.\n\nDo you want to continue?|$SCRIPT_DIR/setuplogging.sh"
  #"System Updates|Refresh repositories and apply operating system updates before configuring other services.\n\nDo you want to continue?|$SCRIPT_DIR/setupupdates.sh"
  #"Identity Reset|Regenerate machine identity data, host keys, and cached state.\n\nDo you want to continue?|$SCRIPT_DIR/setupidentity.sh"
