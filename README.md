@@ -8,7 +8,7 @@ Run the following as root on Debian/Ubuntu to bootstrap Raffo Setup and start th
 ```bash
 	apt update -y && apt install -y git && \
 	if [ -d "/root/vmsetup" ]; then
-	  rm -r -d "/root/vmsetup"
+	  rm -rf "/root/vmsetup"
 	fi && \
 	git clone -b main https://github.com/lurgoyf82/VMSetup.git /root/vmsetup && \
 	chmod +x /root/vmsetup/firstboot.sh && \
