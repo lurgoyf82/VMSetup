@@ -6,9 +6,12 @@ Raffo Setup guides operators through first-boot provisioning tasks for Debian/Ub
 
 Run the following as root on Debian/Ubuntu to bootstrap Raffo Setup and start the guided flow:
 ```bash
-	apt update -y && apt install -y git && 
-	git clone -b main https://github.com/lurgoyf82/VMSetup.git /root/vmsetup && 
-	chmod +x /root/vmsetup/firstboot.sh && 
+	apt update -y && apt install -y git && \
+	if [ -d "/root/vmsetup" ]; then
+	  rm -r -d "/root/vmsetup"
+	fi && \
+	git clone -b main https://github.com/lurgoyf82/VMSetup.git /root/vmsetup && \
+	chmod +x /root/vmsetup/firstboot.sh && \
 	/root/vmsetup/firstboot.sh
 ```
 
