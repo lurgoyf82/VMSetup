@@ -36,6 +36,7 @@ MODULE_DEFINITIONS=(
  #"SSH Hardening|Adjust SSH port, authentication policies, allow-lists, and keepalive tuning.\n\nDo you want to continue?|$SCRIPT_DIR/setupssh.sh"
  #"Guest Agent|Install the matching guest agent for your hypervisor and configure serial console access when supported.\n\nDo you want to continue?|$SCRIPT_DIR/setupguestagent.sh"
  #"Security Hardening|Apply kernel, service, and audit hardening controls.\n\nDo you want to continue?|$SCRIPT_DIR/setuphardening.sh"
+)
 
 for DEFINITION in "${MODULE_DEFINITIONS[@]}"; do
   IFS='|' read -r TITLE MESSAGE SCRIPT <<<"$DEFINITION"
