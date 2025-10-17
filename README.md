@@ -12,7 +12,7 @@ Run the following as root on Debian/Ubuntu to bootstrap Raffo Setup and start th
 	fi && \
 	git clone -b main https://github.com/lurgoyf82/VMSetup.git /root/vmsetup && \
 	chmod +x /root/vmsetup/firstboot.sh && \
-	/root/vmsetup/firstboot.sh
+	bash /root/vmsetup/firstboot.sh
 ```
 
 1. **System Updates** (`setupupdates.sh`)
