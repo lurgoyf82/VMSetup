@@ -265,12 +265,12 @@ run_step() {
       local verbose="${RAFFO_VERBOSE:-0}"
       mkdir -p "$(dirname "$log")"
       if [[ "$verbose" == "1" ]]; then
-        touch "$log"
-        bash "$SCRIPT" 2>&1 | tee -a "$log" | sed 's/^/   /'
+        bash "$SCRIPT" 2>&1 | tee -a "$log"
         rc=${PIPESTATUS[0]}
       else
-        bash "$SCRIPT" >"$log" 2>&1; rc=$?
-        echo -e "   Output stored in $log"
+        # keep whiptail on its tty but log all other output
+        bash "$SCRIPT" > >(tee -a "$log") 2>&1
+        rc=${PIPESTATUS[0]}
       fi
       if [[ $rc -eq 0 ]]; then
         msg_ok "$TITLE completed successfully"
