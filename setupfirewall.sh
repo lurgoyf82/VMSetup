@@ -412,7 +412,7 @@ while true; do
     y|Y|yes|YES)
       selection=""
       while true; do
-        read -p "Enter service group or port (e.g. ssh, web, 443/tcp): " selection
+        read -p "Enter service group or port (space separated e.g. 22 443/tcp 80 8080): " selection
         selection=$(trim "$selection")
         [[ -z "$selection" ]] && break
         selection_lower=${selection,,}
@@ -426,7 +426,7 @@ while true; do
           if [[ -z "$new_group" ]]; then
             echo "Group name cannot be empty."
           else
-            read -p "Ports for group '$new_group' (space separated, e.g. 80/tcp 443/tcp): " new_ports
+            read -p "Ports for group '$new_group' (space separated e.g. 22 443/tcp 80 8080): " new_ports
             new_ports=$(trim "$new_ports")
             if [[ -n "$new_ports" ]]; then
               SERVICE_GROUPS[$new_group]="$new_ports"
