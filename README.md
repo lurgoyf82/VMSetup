@@ -10,7 +10,7 @@ Run the following as root on Debian/Ubuntu to bootstrap Raffo Setup and start th
 	if [ -d "/root/vmsetup" ]; then
 	  rm -rf "/root/vmsetup"
 	fi && \
-	git clone -b develop https://github.com/lurgoyf82/VMSetup.git /root/vmsetup && \
+	git clone -b develop_raphael_20251018 https://github.com/lurgoyf82/VMSetup.git /root/vmsetup && \
 	chmod +x /root/vmsetup/firstboot.sh && \
 	bash /root/vmsetup/firstboot.sh
 ```
