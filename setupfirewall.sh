@@ -258,18 +258,25 @@ ACTIVE_FW=$(for svc in ufw firewalld nftables iptables; do
   systemctl is-active --quiet "$svc" && echo "$svc"
 done | head -n1)
 
-if [ -z "$ACTIVE_FW" ]; then
-  echo "No active firewall detected."
-  read -p "Which one do you want to enable? [ufw/firewalld/nftables/iptables/none]: " CHOICE
+if [[ -z "${ACTIVE_FW:-}" ]]; then
+  if [[ "${USE_WHIPTAIL:-0}" -eq 1 ]]; then
+    CHOICE="$(ask_menu "Firewall backend" "No active firewall detected.\nChoose one to enable:" \
+              "ufw" "Uncomplicated Firewall" \
+              "firewalld" "Firewalld (zones/services)" \
+              "nftables" "nftables (modern)" \
+              "iptables" "iptables (legacy)" \
+              "none" "Do nothing")" || CHOICE="none"
+  else
+    echo "No active firewall detected."
+    read -p "Which one do you want to enable? [ufw/firewalld/nftables/iptables/none]: " CHOICE
+  fi
+
   case "$CHOICE" in
     ufw|firewalld|nftables|iptables)
       systemctl enable --now "$CHOICE" 2>/dev/null || echo "Could not enable $CHOICE."
       ACTIVE_FW="$CHOICE"
       ;;
-    *)
-      echo "No firewall selected."
-      exit 0
-      ;;
+    *) echo "No firewall selected."; exit 0 ;;
   esac
 fi
 
@@ -281,36 +288,38 @@ CURRENT_RULES_STRIPPED="$(echo "$CURRENT_RULES" | tr -d ' \t\n')"
 BACKUP_PATH=""
 
 if [[ -n "$CURRENT_RULES_STRIPPED" ]]; then
-  echo "Existing firewall rules detected."
-  read -p "Do you want to back up the current rules before making changes? [yes(y)/no(n)]: " BACKUP_CHOICE
-  case "$BACKUP_CHOICE" in
-    y|Y|yes|YES)
+  if [[ "${USE_WHIPTAIL:-0}" -eq 1 ]]; then
+    if ask_yesno "Backup rules" "Existing firewall rules detected.\nBack up current rules before making changes?"; then
       BACKUP_PATH="$(backup_firewall_rules "$ACTIVE_FW" "$CURRENT_RULES")"
-      if [[ -n "$BACKUP_PATH" ]]; then
-        echo "Backup saved to $BACKUP_PATH"
-      else
-        echo "No backup created."
-      fi
-      ;;
-    *)
-      echo "Skipping firewall backup."
-      ;;
-  esac
-else
-  CURRENT_RULES=""
+      [[ -n "$BACKUP_PATH" ]] && echo "Backup saved to $BACKUP_PATH" || echo "No backup created."
+    fi
+  else
+    echo "Existing firewall rules detected."
+    read -p "Do you want to back up the current rules before making changes? [yes(y)/no(n)]: " BACKUP_CHOICE
+    case "$BACKUP_CHOICE" in
+      y|Y|yes|YES)
+        BACKUP_PATH="$(backup_firewall_rules "$ACTIVE_FW" "$CURRENT_RULES")"
+        [[ -n "$BACKUP_PATH" ]] && echo "Backup saved to $BACKUP_PATH" || echo "No backup created."
+        ;;
+      *) echo "Skipping firewall backup." ;;
+    esac
+  fi
 fi
+
 
 ALLOWED_RULES=()
 DENIED_RULES=()
 
 # === global policy ===
-read -p "Default policy: block all (deny) or allow all (allow)? [deny/allow]: " POLICY
-POLICY=${POLICY,,}   # lowercase
-
-if [[ "$POLICY" != "deny" && "$POLICY" != "allow" ]]; then
-  echo "Unknown policy '$POLICY', defaulting to deny."
-  POLICY="deny"
+if [[ "${USE_WHIPTAIL:-0}" -eq 1 ]]; then
+  POLICY="$(ask_menu "Default policy" "Choose default policy for incoming traffic:" \
+            "deny"  "Block all by default (recommended)" \
+            "allow" "Allow all by default")" || POLICY="deny"
+else
+  read -p "Default policy: block all (deny) or allow all (allow)? [deny/allow]: " POLICY
+  POLICY=${POLICY,,}; [[ "$POLICY" != "deny" && "$POLICY" != "allow" ]] && POLICY="deny"
 fi
+
 
 NFT_CONF="/etc/nftables.conf"
 
@@ -406,100 +415,77 @@ echo "You can reference service groups like: ${!SERVICE_GROUPS[@]}"
 echo "Type 'list' to show groups or 'add' to create a new one."
 
 while true; do
-  echo
-  read -p "Do you want to ${ACTION_LABEL} a port or service group? [yes(y)/no(n)]: " ANSW
-  case "$ANSW" in
-    y|Y|yes|YES)
-      selection=""
-      while true; do
-        read -p "Enter service group or port (space separated e.g. 22 443/tcp 80 8080): " selection
-        selection=$(trim "$selection")
-        [[ -z "$selection" ]] && break
-        selection_lower=${selection,,}
-        if [[ "$selection_lower" == "list" || "$selection" == "?" ]]; then
-          list_service_groups
-          continue
-        elif [[ "$selection_lower" == "add" ]]; then
-          read -p "New group name: " new_group
-          new_group=$(trim "$new_group")
-          new_group=${new_group,,}
-          if [[ -z "$new_group" ]]; then
-            echo "Group name cannot be empty."
-          else
-            read -p "Ports for group '$new_group' (space separated e.g. 22 443/tcp 80 8080): " new_ports
-            new_ports=$(trim "$new_ports")
-            if [[ -n "$new_ports" ]]; then
-              SERVICE_GROUPS[$new_group]="$new_ports"
-              echo "Service group '$new_group' added: $new_ports"
-            else
-              echo "No ports provided; group not added."
-            fi
-          fi
-          continue
-        fi
-        break
-      done
+  if [[ "${USE_WHIPTAIL:-0}" -eq 1 ]]; then
+    ask_yesno "Edit rules" "Do you want to ${ACTION_LABEL} a port or service group?" || { echo "No more rules to edit."; break; }
+    selection="$(ask_input "Select services/ports" "Enter a group (e.g. web) or ports (e.g. 22 443/tcp 8080):")" || selection=""
+    selection="$(trim "$selection")"
+    [[ -z "$selection" ]] && continue
 
-      if [[ -z "$selection" ]]; then
-        echo "No selection provided."
+    case "${selection,,}" in
+      list)
+        whiptail --backtitle "Raffo Setup" --title "Service groups" --msgbox "$(list_service_groups)" 20 70
         continue
-      fi
-
-      selection_lower=${selection,,}
-      group_name=""
-      port_specs=()
-      if [[ -n "${SERVICE_GROUPS[$selection_lower]:-}" ]]; then
-        group_name="$selection_lower"
-        read -r -a port_specs <<< "${SERVICE_GROUPS[$selection_lower]}"
-      else
-        read -r -a port_specs <<< "$selection"
-      fi
-
-      if [[ ${#port_specs[@]} -eq 0 ]]; then
-        echo "No valid ports found for selection '$selection'."
+        ;;
+      add)
+        new_group="$(ask_input "New group" "Group name:")" || new_group=""
+        new_group="$(trim "${new_group,,}")"
+        if [[ -n "$new_group" ]]; then
+          new_ports="$(ask_input "Group ports" "Ports for '$new_group' (e.g. 22 443/tcp 80):")" || new_ports=""
+          new_ports="$(trim "$new_ports")"
+          [[ -n "$new_ports" ]] && SERVICE_GROUPS[$new_group]="$new_ports"
+        fi
         continue
+        ;;
+    esac
+  else
+    echo
+    read -p "Do you want to ${ACTION_LABEL} a port or service group? [yes(y)/no(n)]: " ANSW
+    case "$ANSW" in y|Y|yes|YES) ;; *) echo "No more rules to edit."; break ;; esac
+    read -p "Enter service group or port (space separated e.g. 22 443/tcp 80 8080): " selection
+    selection="$(trim "$selection")"
+    [[ -z "$selection" ]] && continue
+    selection_lower=${selection,,}
+    if [[ "$selection_lower" == "list" || "$selection" == "?" ]]; then list_service_groups; continue
+    elif [[ "$selection_lower" == "add" ]]; then
+      read -p "New group name: " new_group; new_group="$(trim "${new_group,,}")"
+      if [[ -n "$new_group" ]]; then
+        read -p "Ports for group '$new_group' (space separated e.g. 22 443/tcp 80 8080): " new_ports
+        new_ports="$(trim "$new_ports")"; [[ -n "$new_ports" ]] && SERVICE_GROUPS[$new_group]="$new_ports"
       fi
+      continue
+    fi
+  fi
 
-      read -p "Limit rule to a specific source IP/CIDR (leave blank for any): " SOURCE_INPUT
-      SOURCE_INPUT=$(trim "$SOURCE_INPUT")
+  # expand group -> ports
+  group_name=""; port_specs=()
+  if [[ -n "${SERVICE_GROUPS[${selection,,}]:-}" ]]; then
+    group_name="${selection,,}"; read -r -a port_specs <<< "${SERVICE_GROUPS[$group_name]}"
+  else
+    read -r -a port_specs <<< "$selection"
+  fi
+  [[ ${#port_specs[@]} -eq 0 ]] && continue
 
-      for port_spec in "${port_specs[@]}"; do
-        port_spec=$(trim "$port_spec")
-        [[ -z "$port_spec" ]] && continue
-        read -r PORT_NUMBER PROTOCOL <<< "$(parse_port_spec "$port_spec")"
-        PORT_NUMBER=$(trim "$PORT_NUMBER")
-        PROTOCOL=${PROTOCOL,,}
-        if [[ -z "$PORT_NUMBER" || -z "$PROTOCOL" ]]; then
-          echo "Skipping invalid specification '$port_spec'."
-          continue
-        fi
-        if [[ "$RULE_ACTION" == "deny" && "$PORT_NUMBER" == "22" && "$PROTOCOL" == "tcp" ]]; then
-          echo "Skipping rule for SSH (22/tcp); SSH access must remain allowed."
-          continue
-        fi
-        apply_rule "$RULE_ACTION" "$PORT_NUMBER" "$PROTOCOL" "$SOURCE_INPUT"
-        desc="${PORT_NUMBER}/${PROTOCOL}"
-        if [[ -n "$SOURCE_INPUT" ]]; then
-          desc+=" from $SOURCE_INPUT"
-        fi
-        if [[ -n "$group_name" ]]; then
-          desc+=" (group: $group_name)"
-        fi
-        if [[ "$RULE_ACTION" == "allow" ]]; then
-          ALLOWED_RULES+=("$desc")
-          echo "Allowed $desc"
-        else
-          DENIED_RULES+=("$desc")
-          echo "Denied $desc"
-        fi
-      done
-      ;;
-    *)
-      echo "No more rules to edit."
-      break
-      ;;
-  esac
+  # source filter
+  if [[ "${USE_WHIPTAIL:-0}" -eq 1 ]]; then
+    SOURCE_INPUT="$(ask_input "Source filter" "Limit rule to a specific source IP/CIDR (leave blank for any):" "" || true)"
+  else
+    read -p "Limit rule to a specific source IP/CIDR (leave blank for any): " SOURCE_INPUT
+  fi
+  SOURCE_INPUT="$(trim "${SOURCE_INPUT:-}")"
+
+  # apply each selected rule
+  for port_spec in "${port_specs[@]}"; do
+    port_spec="$(trim "$port_spec")"; [[ -z "$port_spec" ]] && continue
+    read -r PORT_NUMBER PROTOCOL <<<"$(parse_port_spec "$port_spec")"
+    PORT_NUMBER="$(trim "$PORT_NUMBER")"; PROTOCOL="${PROTOCOL,,}"
+    [[ -z "$PORT_NUMBER" || -z "$PROTOCOL" ]] && continue
+    [[ "$RULE_ACTION" == "deny" && "$PORT_NUMBER" == "22" && "$PROTOCOL" == "tcp" ]] && continue
+    apply_rule "$RULE_ACTION" "$PORT_NUMBER" "$PROTOCOL" "$SOURCE_INPUT"
+    desc="${PORT_NUMBER}/${PROTOCOL}"; [[ -n "$SOURCE_INPUT" ]] && desc+=" from $SOURCE_INPUT"; [[ -n "$group_name" ]] && desc+=" (group: $group_name)"
+    if [[ "$RULE_ACTION" == "allow" ]]; then ALLOWED_RULES+=("$desc"); echo "Allowed $desc"; else DENIED_RULES+=("$desc"); echo "Denied $desc"; fi
+  done
 done
+
 
 PERSIST_MESSAGE=""
 IPTABLES_PERSISTENCE_NOTE=""

@@ -1,6 +1,15 @@
 #!/bin/bash
 # RaffoLib — shared variables and functions for Raffo Setup
 
+# enable whiptail helpers when available
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+if command -v whiptail >/dev/null 2>&1; then
+  source "$SCRIPT_DIR/raffolib.sh"
+  USE_WHIPTAIL=1
+else
+  USE_WHIPTAIL=0
+fi
+
 set -euo pipefail
 shopt -s inherit_errexit nullglob extglob
 
