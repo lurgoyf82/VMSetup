@@ -92,6 +92,22 @@ show_rollback_instructions() {
   show_message "$title" "$message"
 }
 
+detect_runtime_ipv4() {
+  local iface="$1"
+  ip -o -4 addr show dev "$iface" scope global 2>/dev/null | awk 'NR==1 {print $4}'
+}
+
+detect_runtime_gateway() {
+  local iface="$1"
+  ip route show default 0.0.0.0/0 2>/dev/null | awk -v dev="$iface" '$5 == dev {print $3; exit}'
+}
+
+detect_system_dns() {
+  if [[ -f /etc/resolv.conf ]]; then
+    awk '/^nameserver/ {print $2}' /etc/resolv.conf | paste -sd' ' - 2>/dev/null || true
+  fi
+}
+
 run_netplan_helper() {
   local mode="$1"
   shift
@@ -347,6 +363,152 @@ if __name__ == '__main__':
 PY
 }
 
+run_interfaces_helper() {
+  local mode="$1"
+  shift
+  python3 - "$mode" "$@" <<'PY'
+import re
+import sys
+
+
+IFACE_RE = re.compile(r'^\s*iface\s+(\S+)\s+inet\s+(\S+)\s*$')
+
+
+def read_lines(path):
+    with open(path, encoding='utf-8') as handle:
+        return handle.read().splitlines()
+
+
+def write_lines(path, lines):
+    with open(path, 'w', encoding='utf-8') as handle:
+        handle.write('\n'.join(lines) + '\n')
+
+
+def find_block(lines, interface):
+    start = end = None
+    for idx, line in enumerate(lines):
+        match = IFACE_RE.match(line)
+        if match and match.group(1) == interface:
+            start = idx
+            end = len(lines)
+            for j in range(idx + 1, len(lines)):
+                if IFACE_RE.match(lines[j]):
+                    end = j
+                    break
+            return start, end
+    raise SystemExit(f'Interface {interface} not found')
+
+
+def parse_mode(path):
+    lines = read_lines(path)
+    for idx, line in enumerate(lines):
+        match = IFACE_RE.match(line)
+        if not match:
+            continue
+        name, method = match.group(1), match.group(2)
+        if name == 'lo':
+            continue
+        address = ''
+        gateway = ''
+        dns = ''
+        end = len(lines)
+        for j in range(idx + 1, len(lines)):
+            if IFACE_RE.match(lines[j]):
+                end = j
+                break
+        for raw in lines[idx + 1:end]:
+            stripped = raw.strip()
+            if not stripped or stripped.startswith('#'):
+                continue
+            if stripped.startswith('address '):
+                address = stripped.split(None, 1)[1]
+            elif stripped.startswith('gateway '):
+                gateway = stripped.split(None, 1)[1]
+            elif stripped.startswith('dns-nameservers '):
+                dns = stripped.split(None, 1)[1]
+        print(f'INTERFACE={name}')
+        print(f'METHOD={method}')
+        print(f'ADDRESS={address}')
+        print(f'GATEWAY={gateway}')
+        print(f'DNS={dns}')
+        return
+    raise SystemExit('No interface configuration found')
+
+
+def update_mode(path, dest, interface, method, address, gateway, dns):
+    lines = read_lines(path)
+    start, end = find_block(lines, interface)
+    block = lines[start:end]
+    leading = block[0][: len(block[0]) - len(block[0].lstrip())]
+    parts = block[0].strip().split()
+    if len(parts) >= 4:
+        parts[3] = method
+    else:
+        parts = ['iface', interface, 'inet', method]
+    block[0] = f"{leading}{' '.join(parts)}"
+
+    option_indent = None
+    for raw in block[1:]:
+        stripped = raw.strip()
+        if stripped and not stripped.startswith('#'):
+            option_indent = raw[: len(raw) - len(raw.lstrip())]
+            break
+    if option_indent is None:
+        option_indent = '    '
+
+    filtered = [block[0]]
+    for raw in block[1:]:
+        stripped = raw.strip()
+        if not stripped or stripped.startswith('#'):
+            filtered.append(raw)
+            continue
+        key = stripped.split(None, 1)[0]
+        if key in {'address', 'netmask', 'gateway', 'dns-nameservers'}:
+            continue
+        filtered.append(raw)
+    block = filtered
+
+    if method == 'static':
+        if address:
+            block.append(f'{option_indent}address {address}')
+        if gateway:
+            block.append(f'{option_indent}gateway {gateway}')
+        if dns:
+            block.append(f'{option_indent}dns-nameservers {dns}')
+
+    lines = lines[:start] + block + lines[end:]
+    write_lines(dest, lines)
+
+
+def main():
+    if len(sys.argv) < 2:
+        raise SystemExit('Mode not provided')
+    mode = sys.argv[1]
+    if mode == 'parse':
+        if len(sys.argv) != 3:
+            raise SystemExit('Usage: parse <file>')
+        parse_mode(sys.argv[2])
+    elif mode == 'update':
+        if len(sys.argv) != 9:
+            raise SystemExit('Usage: update <file> <dest> <interface> <method> <address> <gateway> <dns>')
+        update_mode(
+            sys.argv[2],
+            sys.argv[3],
+            sys.argv[4],
+            sys.argv[5],
+            sys.argv[6],
+            sys.argv[7],
+            sys.argv[8],
+        )
+    else:
+        raise SystemExit(f'Unknown mode {mode}')
+
+
+if __name__ == '__main__':
+    main()
+PY
+}
+
 shopt -s nullglob
 NETPLAN_CANDIDATES=(/etc/netplan/*.yaml /etc/netplan/*.yml)
 NETPLAN_FILES=()
@@ -476,6 +638,7 @@ if (( ${#NETPLAN_FILES[@]} > 0 )); then
   exit 0
 fi
 
+
 IF_FILE="/etc/network/interfaces"
 if [[ ! -f "$IF_FILE" ]]; then
   echo "Warning: no Netplan or /etc/network/interfaces configuration file found." >&2
@@ -484,109 +647,207 @@ fi
 
 echo "Network configuration file found: $IF_FILE"
 
-IFACE_NAME=$(awk '/^[[:space:]]*iface[[:space:]]+[^[:space:]]+[[:space:]]+inet[[:space:]]+static/ {print $2; exit}' "$IF_FILE")
-
-# IP
-CURRENT_IP=$(grep -E '^[[:space:]]*address[[:space:]]' "$IF_FILE" | awk '{print $2}' | head -n1)
-UPDATE_IP=0
-UPDATED_IP="$CURRENT_IP"
-if [[ -n "${CURRENT_IP:-}" ]]; then
-  if ask_yesno "Change IP" "Current IP: $CURRENT_IP\n\nChange it?"; then
-    NEW_IP=$(ask_input "New IP" "Enter IP (CIDR), e.g. 192.168.1.210/24" "$CURRENT_IP") || true
-    if [[ -n "${NEW_IP:-}" ]]; then
-      UPDATED_IP="$NEW_IP"
-      UPDATE_IP=1
-    fi
-  fi
+if ! mapfile -t IFACE_INFO < <(run_interfaces_helper parse "$IF_FILE"); then
+  echo "Failed to parse $IF_FILE" >&2
+  exit 1
 fi
 
-# Gateway
-CURRENT_GW=$(grep -E '^[[:space:]]*gateway[[:space:]]' "$IF_FILE" | awk '{print $2}' | head -n1)
-UPDATE_GW=0
-UPDATED_GW="$CURRENT_GW"
-if [[ -n "${CURRENT_GW:-}" ]]; then
-  if ask_yesno "Change Gateway" "Current gateway: $CURRENT_GW\n\nChange it?"; then
-    NEW_GW=$(ask_input "New Gateway" "Enter new gateway" "$CURRENT_GW") || true
-    if [[ -n "${NEW_GW:-}" ]]; then
-      UPDATED_GW="$NEW_GW"
-      UPDATE_GW=1
-    fi
-  fi
+IFACE_NAME=""
+IFACE_METHOD=""
+CURRENT_IP=""
+CURRENT_GW=""
+CURRENT_DNS=""
+for entry in "${IFACE_INFO[@]}"; do
+  key=${entry%%=*}
+  value=${entry#*=}
+  case "$key" in
+    INTERFACE) IFACE_NAME="$value" ;;
+    METHOD) IFACE_METHOD="$value" ;;
+    ADDRESS) CURRENT_IP="$value" ;;
+    GATEWAY) CURRENT_GW="$value" ;;
+    DNS) CURRENT_DNS="$value" ;;
+  esac
+done
+
+if [[ -z "$IFACE_NAME" ]]; then
+  echo "Unable to identify primary interface from $IF_FILE" >&2
+  exit 1
 fi
 
-# DNS
-CURRENT_DNS=$(grep -E '^[[:space:]]*dns-nameservers[[:space:]]' "$IF_FILE" | head -n1 | sed -E 's/^[[:space:]]*dns-nameservers[[:space:]]+//')
-UPDATE_DNS=0
-UPDATED_DNS="$CURRENT_DNS"
-if [[ -n "${CURRENT_DNS:-}" ]]; then
-  if ask_yesno "Change DNS" "Current DNS: $CURRENT_DNS\n\nChange it?"; then
-    NEW_DNS=$(ask_input "New DNS" "Space-separated DNS servers" "$CURRENT_DNS") || true
-    if [[ -n "${NEW_DNS:-}" ]]; then
-      UPDATED_DNS="$NEW_DNS"
-      UPDATE_DNS=1
-    fi
+DETECTED_IP=$(detect_runtime_ipv4 "$IFACE_NAME")
+DETECTED_GW=$(detect_runtime_gateway "$IFACE_NAME")
+DETECTED_DNS=$(detect_system_dns)
+
+TARGET_METHOD="$IFACE_METHOD"
+FINAL_IP="$CURRENT_IP"
+FINAL_GW="$CURRENT_GW"
+FINAL_DNS="$CURRENT_DNS"
+
+if [[ "$IFACE_METHOD" == "dhcp" ]]; then
+  DETECT_MSG="Detected IPv4: ${DETECTED_IP:-Unavailable}"
+  if [[ -n "$DETECTED_GW" ]]; then
+    DETECT_MSG+=$'\n'"Detected gateway: $DETECTED_GW"
   fi
-fi
-
-if [[ "$UPDATE_IP" == 1 || "$UPDATE_GW" == 1 || "$UPDATE_DNS" == 1 ]]; then
-  TMP_FILE=$(mktemp)
-  cp "$IF_FILE" "$TMP_FILE"
-
-  if [[ "$UPDATE_IP" == 1 ]]; then
-    CURRENT_IP_ESC=$(escape_sed_regex "$CURRENT_IP")
-    sed -i -E "s|^([[:space:]]*address[[:space:]]+)${CURRENT_IP_ESC}[[:space:]]*$|\\1${UPDATED_IP}|" "$TMP_FILE"
+  if [[ -n "$DETECTED_DNS" ]]; then
+    DETECT_MSG+=$'\n'"Detected DNS: $DETECTED_DNS"
   fi
-
-  if [[ "$UPDATE_GW" == 1 ]]; then
-    CURRENT_GW_ESC=$(escape_sed_regex "$CURRENT_GW")
-    sed -i -E "s|^([[:space:]]*gateway[[:space:]]+)${CURRENT_GW_ESC}[[:space:]]*$|\\1${UPDATED_GW}|" "$TMP_FILE"
-  fi
-
-  if [[ "$UPDATE_DNS" == 1 ]]; then
-    CURRENT_DNS_ESC=$(escape_sed_regex "$CURRENT_DNS")
-    sed -i -E "s|^([[:space:]]*dns-nameservers[[:space:]]+)${CURRENT_DNS_ESC}[[:space:]]*$|\\1${UPDATED_DNS}|" "$TMP_FILE"
-  fi
-
-  preview_diff "Interfaces changes" "$IF_FILE" "$TMP_FILE"
-
-  if ! ACTION=$(ask_menu "Apply interfaces" "Apply updated configuration?" \
-    "apply-now" "Apply immediately" \
-    "apply-after-reboot" "Save for next reboot" \
-    "cancel" "Abort without changes"); then
+  if ! ACTION=$(ask_menu "Network configuration" "Current method: DHCP\n\n$DETECT_MSG\n\nChoose an action." "keep-dhcp" "Keep DHCP (no changes)" "switch-static" "Switch to a static configuration" "cancel" "Cancel"); then
     ACTION="cancel"
   fi
-
   case "$ACTION" in
-    apply-now|apply-after-reboot)
-      if [[ "$UPDATE_IP" == 1 ]]; then
-        if ! duplicate_ip_check "$IFACE_NAME" "$UPDATED_IP"; then
-          rm -f "$TMP_FILE"
-          exit 1
-        fi
-      fi
-      BACKUP="$(raffo_backup "$IF_FILE" "interfaces")"
-      if [[ -n "$BACKUP" ]]; then
-        echo "Backup created at $BACKUP"
-      fi
-      cp "$TMP_FILE" "$IF_FILE"
-      if [[ "$ACTION" == "apply-now" ]]; then
-        ensure_emergency_ssh_rule
-        if systemctl is-active --quiet networking; then
-          systemctl reload networking >/dev/null 2>&1 || systemctl restart networking >/dev/null 2>&1 || true
-        fi
-        show_rollback_instructions "Interfaces rollback" "If connectivity fails, run:\n\ncp '$BACKUP' '$IF_FILE'\nifdown '$IFACE_NAME' && ifup '$IFACE_NAME'"
-      else
-        show_rollback_instructions "Interfaces staged" "Changes saved. They will take effect after reboot or network restart.\n\nTo rollback before applying:\ncp '$BACKUP' '$IF_FILE'"
-      fi
+    keep-dhcp)
+      echo "No interface changes requested."
+      exit 0
+      ;;
+    switch-static)
+      TARGET_METHOD="static"
       ;;
     *)
       echo "Interfaces update cancelled."
+      exit 0
       ;;
   esac
-
-  rm -f "$TMP_FILE"
+elif [[ "$IFACE_METHOD" == "static" ]]; then
+  if ! ACTION=$(ask_menu "Network configuration" "Current method: static\n\nChoose an action." "edit-static" "Edit static settings" "switch-dhcp" "Switch to DHCP" "cancel" "Cancel"); then
+    ACTION="cancel"
+  fi
+  case "$ACTION" in
+    edit-static)
+      TARGET_METHOD="static"
+      ;;
+    switch-dhcp)
+      TARGET_METHOD="dhcp"
+      ;;
+    *)
+      echo "Interfaces update cancelled."
+      exit 0
+      ;;
+  esac
 else
-  echo "No interface changes requested."
+  if ! ACTION=$(ask_menu "Network configuration" "Current method: $IFACE_METHOD\n\nChoose desired configuration." "switch-static" "Switch to a static configuration" "switch-dhcp" "Switch to DHCP" "cancel" "Cancel"); then
+    ACTION="cancel"
+  fi
+  case "$ACTION" in
+    switch-static)
+      TARGET_METHOD="static"
+      ;;
+    switch-dhcp)
+      TARGET_METHOD="dhcp"
+      ;;
+    *)
+      echo "Interfaces update cancelled."
+      exit 0
+      ;;
+  esac
 fi
+
+if [[ "$TARGET_METHOD" == "static" && "$IFACE_METHOD" == "dhcp" ]]; then
+  [[ -z "$FINAL_IP" && -n "$DETECTED_IP" ]] && FINAL_IP="$DETECTED_IP"
+  [[ -z "$FINAL_GW" && -n "$DETECTED_GW" ]] && FINAL_GW="$DETECTED_GW"
+  [[ -z "$FINAL_DNS" && -n "$DETECTED_DNS" ]] && FINAL_DNS="$DETECTED_DNS"
+fi
+
+if [[ "$TARGET_METHOD" == "static" ]]; then
+  if [[ -n "$FINAL_IP" ]]; then
+    if ask_yesno "Change IP" "Current IP: $FINAL_IP\n\nChange it?"; then
+      NEW_IP=$(ask_input "New IP" "Enter IP (CIDR), e.g. 192.168.1.210/24" "$FINAL_IP") || true
+      if [[ -n "${NEW_IP:-}" ]]; then
+        FINAL_IP="$NEW_IP"
+      fi
+    fi
+  else
+    while :; do
+      NEW_IP=$(ask_input "New IP" "Enter IP (CIDR), e.g. 192.168.1.210/24" "${DETECTED_IP:-}") || true
+      if [[ -n "${NEW_IP:-}" ]]; then
+        FINAL_IP="$NEW_IP"
+        break
+      fi
+      if ! ask_yesno "Missing IP" "A static configuration requires an IP address. Try again?"; then
+        echo "Interfaces update cancelled."
+        exit 0
+      fi
+    done
+  fi
+
+  if [[ -n "$FINAL_GW" ]]; then
+    if ask_yesno "Change Gateway" "Current gateway: $FINAL_GW\n\nChange it?"; then
+      NEW_GW=$(ask_input "New Gateway" "Enter new gateway" "$FINAL_GW") || true
+      if [[ -n "${NEW_GW:-}" ]]; then
+        FINAL_GW="$NEW_GW"
+      fi
+    fi
+  else
+    if ask_yesno "Configure Gateway" "No gateway configured. Add one?"; then
+      NEW_GW=$(ask_input "Gateway" "Enter gateway address" "${DETECTED_GW:-}") || true
+      if [[ -n "${NEW_GW:-}" ]]; then
+        FINAL_GW="$NEW_GW"
+      fi
+    fi
+  fi
+
+  if [[ -n "$FINAL_DNS" ]]; then
+    if ask_yesno "Change DNS" "Current DNS: $FINAL_DNS\n\nChange it?"; then
+      NEW_DNS=$(ask_input "New DNS" "Space-separated DNS servers" "$FINAL_DNS") || true
+      if [[ -n "${NEW_DNS:-}" ]]; then
+        FINAL_DNS="$NEW_DNS"
+      fi
+    fi
+  else
+    if ask_yesno "Configure DNS" "No DNS servers configured. Add them?"; then
+      NEW_DNS=$(ask_input "DNS Servers" "Space-separated DNS servers" "${DETECTED_DNS:-}") || true
+      if [[ -n "${NEW_DNS:-}" ]]; then
+        FINAL_DNS="$NEW_DNS"
+      fi
+    fi
+  fi
+
+  if [[ -z "$FINAL_IP" ]]; then
+    show_message "Invalid configuration" "Static configuration requires an IP address. Aborting."
+    exit 1
+  fi
+fi
+
+TMP_FILE=$(mktemp)
+if ! run_interfaces_helper update "$IF_FILE" "$TMP_FILE" "$IFACE_NAME" "$TARGET_METHOD" "${FINAL_IP:-}" "${FINAL_GW:-}" "${FINAL_DNS:-}"; then
+  rm -f "$TMP_FILE"
+  echo "Failed to render interface configuration." >&2
+  exit 1
+fi
+
+preview_diff "Interfaces changes" "$IF_FILE" "$TMP_FILE"
+
+if ! ACTION=$(ask_menu "Apply interfaces" "Apply updated configuration?" "apply-now" "Apply immediately" "apply-after-reboot" "Save for next reboot" "cancel" "Abort without changes"); then
+  ACTION="cancel"
+fi
+
+case "$ACTION" in
+  apply-now|apply-after-reboot)
+    if [[ "$TARGET_METHOD" == "static" ]]; then
+      if ! duplicate_ip_check "$IFACE_NAME" "$FINAL_IP"; then
+        rm -f "$TMP_FILE"
+        exit 1
+      fi
+    fi
+    BACKUP="$(raffo_backup "$IF_FILE" "interfaces")"
+    if [[ -n "$BACKUP" ]]; then
+      echo "Backup created at $BACKUP"
+    fi
+    cp "$TMP_FILE" "$IF_FILE"
+    if [[ "$ACTION" == "apply-now" ]]; then
+      ensure_emergency_ssh_rule
+      if systemctl is-active --quiet networking; then
+        systemctl reload networking >/dev/null 2>&1 || systemctl restart networking >/dev/null 2>&1 || true
+      fi
+      show_rollback_instructions "Interfaces rollback" "If connectivity fails, run:\n\ncp '$BACKUP' '$IF_FILE'\nifdown '$IFACE_NAME' && ifup '$IFACE_NAME'"
+    else
+      show_rollback_instructions "Interfaces staged" "Changes saved. They will take effect after reboot or network restart.\n\nTo rollback before applying:\ncp '$BACKUP' '$IF_FILE'"
+    fi
+    ;;
+  *)
+    echo "Interfaces update cancelled."
+    ;;
+esac
+
+rm -f "$TMP_FILE"
 
 exit 0
