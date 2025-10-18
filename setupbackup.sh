@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-source /root/raffolib.sh
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+source "$SCRIPT_DIR/raffolib.sh"
 
 msg_info "Starting backup client configuration"
 
@@ -55,7 +56,7 @@ case "$CLIENT" in
     msg_error "Unsupported selection"
     exit 1
     ;;
-endcase
+esac
 
 SERVER=$(ask_input "Backup Server" "$SERVER_PROMPT")
 REPOSITORY=$(ask_input "Repository" "$REPO_PROMPT")

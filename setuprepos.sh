@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
-source /root/raffolib.sh
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+source "$SCRIPT_DIR/raffolib.sh"
 
 write_sources_stanza() {
   local target="$1" uri="$2" suite="$3" components="$4" signed_by="$5"

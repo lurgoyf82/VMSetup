@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
-source /root/raffolib.sh
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+source "$SCRIPT_DIR/raffolib.sh"
 
 escape_sed_regex() {
   printf '%s' "$1" | sed -e 's|[][\\.^$*+?{}()|/&]|\\&|g'
@@ -58,11 +59,9 @@ preview_diff() {
   local diff_file
   diff_file=$(mktemp)
   if diff -u "$base" "$new_file" >"$diff_file"; then
-    whiptail --backtitle "Raffo Setup" --title "$title" \
-      --msgbox "No differences detected." 10 60
+    show_message "$title" "No differences detected."
   else
-    whiptail --backtitle "Raffo Setup" --title "$title" \
-      --textbox "$diff_file" 20 78
+    show_textbox "$title" "$diff_file" 20 78 1
   fi
   rm -f "$diff_file"
 }
@@ -90,7 +89,7 @@ duplicate_ip_check() {
 
 show_rollback_instructions() {
   local title="$1" message="$2"
-  whiptail --backtitle "Raffo Setup" --title "$title" --msgbox "$message" 14 70
+  show_message "$title" "$message"
 }
 
 run_netplan_helper() {

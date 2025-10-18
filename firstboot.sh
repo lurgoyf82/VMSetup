@@ -122,15 +122,12 @@ else
 fi
 
 echo
-read -p "Disable Raffo Setup autorun at startup? [yes(y)/no(n)]: " REPLY
-case "$REPLY" in
-  y|Y|yes|YES)
-    if sed -i 's|^\([^#].*firstboot\.sh.*\)$|# \1|' /root/.bashrc; then
-      echo -e "\n${GN}✓ Raffo Setup autorun disabled.${CL}"
-      echo -e "Enable again with:\n  ${YW}sed -i \"s|^#.*firstboot\\.sh.*|${SCRIPT_DIR}/firstboot.sh|\" /root/.bashrc${CL}\n"
-    else
-      msg_error "Failed to disable Raffo Setup autorun."
-    fi
-    ;;
-  *) echo -e "\n${YW}Raffo Setup autorun remains active.${CL}";;
-esac
+if ask_yesno "Disable Autorun" "Disable Raffo Setup autorun at startup?"; then
+  if sed -i 's|^\([^#].*firstboot\.sh.*\)$|# \1|' /root/.bashrc; then
+    show_message "Autorun Disabled" "Raffo Setup autorun disabled.\n\nEnable again with:\n  sed -i 's|^#.*firstboot\\.sh.*|${SCRIPT_DIR}/firstboot.sh|' /root/.bashrc"
+  else
+    msg_error "Failed to disable Raffo Setup autorun."
+  fi
+else
+  show_message "Autorun" "Raffo Setup autorun remains active."
+fi

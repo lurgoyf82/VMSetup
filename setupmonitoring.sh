@@ -2,13 +2,16 @@
 
 set -euo pipefail
 
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+source "$SCRIPT_DIR/raffolib.sh"
+
 if [[ $EUID -ne 0 ]]; then
-  echo "This script must be run as root." >&2
+  msg_error "This script must be run as root."
   exit 1
 fi
 
 if ! command -v apt-get >/dev/null 2>&1; then
-  echo "This script currently supports Debian/Ubuntu systems with apt-get." >&2
+  msg_error "This script currently supports Debian/Ubuntu systems with apt-get."
   exit 1
 fi
 
@@ -93,12 +96,15 @@ prompt_listen() {
   local default_port="${AGENT_PORTS[$agent]%/*}"
   local proto="${AGENT_PORTS[$agent]#*/}"
 
-  read -rp "Enter listen IP for ${AGENT_TITLES[$agent]} [$default_ip]: " listen_ip
-  listen_ip=${listen_ip:-$default_ip}
+  local listen_ip listen_port
+  if ! listen_ip=$(ask_input "${AGENT_TITLES[$agent]}" "Enter listen IP" "$default_ip"); then
+    listen_ip="$default_ip"
+  fi
 
   if [[ "$proto" == "tcp" ]]; then
-    read -rp "Enter listen port for ${AGENT_TITLES[$agent]} [$default_port]: " listen_port
-    listen_port=${listen_port:-$default_port}
+    if ! listen_port=$(ask_input "${AGENT_TITLES[$agent]}" "Enter listen port" "$default_port"); then
+      listen_port="$default_port"
+    fi
     echo "$listen_ip:$listen_port"
   else
     echo "$listen_ip:$default_port"
@@ -151,7 +157,7 @@ install_agent() {
   local package="${AGENT_PACKAGES[$agent]}"
   local service="${AGENT_SERVICES[$agent]}"
 
-  echo "--- Installing ${AGENT_TITLES[$agent]} ---"
+  msg_info "Installing ${AGENT_TITLES[$agent]}"
   apt-get install -y "$package"
 
   case "$agent" in
@@ -170,9 +176,9 @@ install_agent() {
   systemctl restart "$service"
 
   if systemctl is-active --quiet "$service"; then
-    echo "${AGENT_TITLES[$agent]} is active."
+    msg_ok "${AGENT_TITLES[$agent]} is active"
   else
-    echo "Warning: ${AGENT_TITLES[$agent]} failed to start." >&2
+    msg_error "${AGENT_TITLES[$agent]} failed to start"
   fi
 
   if [[ "${AGENT_PORTS[$agent]#*/}" == "tcp" ]]; then
@@ -185,69 +191,47 @@ install_agent() {
 }
 
 show_summary() {
-  echo
-  echo "=== Monitoring setup summary ==="
-  for agent in "${SELECTED_AGENTS[@]}"; do
-    local service="${AGENT_SERVICES[$agent]}"
-    local endpoint="${SUMMARY_ENDPOINTS[$agent]}"
-    local status="inactive"
-    if systemctl is-active --quiet "$service"; then
-      status="active"
+  local summary_file
+  summary_file=$(mktemp)
+  {
+    echo "Monitoring setup summary"
+    echo
+    for agent in "${SELECTED_AGENTS[@]}"; do
+      local service="${AGENT_SERVICES[$agent]}"
+      local endpoint="${SUMMARY_ENDPOINTS[$agent]}"
+      local status="inactive"
+      if systemctl is-active --quiet "$service"; then
+        status="active"
+      fi
+      printf "- %s: service %s, endpoint %s\n" "${AGENT_TITLES[$agent]}" "$status" "$endpoint"
+    done
+    echo
+    if [[ -z "$FIREWALL" ]]; then
+      echo "No firewall detected; ports are open by default."
+    else
+      echo "Firewall '${FIREWALL}' updated with required rules."
     fi
-    printf "- %s: service %s, endpoint %s\n" "${AGENT_TITLES[$agent]}" "$status" "$endpoint"
-  done
-  if [[ -z "$FIREWALL" ]]; then
-    echo "No firewall detected; ports are open by default."
-  else
-    echo "Firewall '${FIREWALL}' updated with required rules."
-  fi
+  } >"$summary_file"
+  show_textbox "Monitoring Summary" "$summary_file" 18 70 1 || true
+  rm -f "$summary_file"
 }
 
-clear
-
-cat <<'EOM'
-================ Monitoring Agent Setup ================
-Select the agents you want to install. Enter the numbers
-separated by spaces (e.g. "1 3"). Leave blank to cancel.
-EOM
-
-for i in "${!AGENTS[@]}"; do
-  idx=$((i+1))
-  agent="${AGENTS[$i]}"
-  printf "[%d] %-22s %s\n" "$idx" "${AGENT_TITLES[$agent]}" "${AGENT_DESCRIPTIONS[$agent]}"
-  printf "    Package: %s, Service: %s\n" "${AGENT_PACKAGES[$agent]}" "${AGENT_SERVICES[$agent]}"
-  printf "    Default port: %s\n" "${AGENT_PORTS[$agent]}"
-  echo
+menu_entries=()
+for agent in "${AGENTS[@]}"; do
+  menu_entries+=("$agent" "${AGENT_TITLES[$agent]} - ${AGENT_DESCRIPTIONS[$agent]} (default ${AGENT_PORTS[$agent]})" OFF)
 done
 
-read -rp "Your choice: " choice
+selection=$(ask_checklist "Monitoring Agents" "Select monitoring agents to install" --size 20 70 8 "${menu_entries[@]}") || selection=""
 
-if [[ -z "$choice" ]]; then
-  echo "No agents selected. Exiting."
+if [[ -z "$selection" ]]; then
+  show_message "Monitoring Agents" "No agents selected. Exiting."
   exit 0
 fi
 
-SELECTED_AGENTS=()
-for token in $choice; do
-  if [[ $token =~ ^[0-9]+$ ]] && (( token >= 1 && token <= ${#AGENTS[@]} )); then
-    agent="${AGENTS[$((token-1))]}"
-    skip=false
-    for existing in "${SELECTED_AGENTS[@]}"; do
-      if [[ $existing == $agent ]]; then
-        skip=true
-        break
-      fi
-    done
-    if ! $skip; then
-      SELECTED_AGENTS+=("$agent")
-    fi
-  else
-    echo "Ignoring invalid selection: $token"
-  fi
-done
+read -r -a SELECTED_AGENTS <<<"$selection"
 
 if [[ ${#SELECTED_AGENTS[@]} -eq 0 ]]; then
-  echo "No valid agents selected. Exiting."
+  show_message "Monitoring Agents" "No valid agents selected. Exiting."
   exit 0
 fi
 
@@ -255,16 +239,14 @@ declare -A LISTEN_ADDRESSES
 
 for agent in "${SELECTED_AGENTS[@]}"; do
   LISTEN_ADDRESSES[$agent]=$(prompt_listen "$agent")
-  echo
 
 done
 
-echo "Updating package index..."
+msg_info "Updating package index"
 apt-get update -y >/dev/null
 
 for agent in "${SELECTED_AGENTS[@]}"; do
   install_agent "$agent" "${LISTEN_ADDRESSES[$agent]}"
-  echo
 
 done
 

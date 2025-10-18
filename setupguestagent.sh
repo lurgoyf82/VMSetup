@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
-source /root/raffolib.sh
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+source "$SCRIPT_DIR/raffolib.sh"
 
 ensure_serial_console() {
   local grub_file="/etc/default/grub"

@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
-source /root/raffolib.sh
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+source "$SCRIPT_DIR/raffolib.sh"
 
 CONFIG_FILE="/etc/ssh/sshd_config"
 SSH_PORT_STATE_FILE="$RAFFO_STATE_DIR/ssh_port"
@@ -418,7 +419,7 @@ while true; do
         fi
       done
       echo
-      read -p "Press Enter to continue" _
+      pause_for_ack "SSH Keys" "Press OK after reviewing the instructions."
       ;;
     *)
       break
