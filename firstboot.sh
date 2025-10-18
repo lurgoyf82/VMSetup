@@ -24,18 +24,18 @@ MODULE_ORDER=()
 
 MODULE_DEFINITIONS=(
  "Network Configuration|Modify network interface addressing and DNS.\n \nDo you want to continue?|$SCRIPT_DIR/setupnetwork.sh"
- #"Hostname Configuration|Set the system hostname and related DNS defaults.\n\nDo you want to continue?|$SCRIPT_DIR/setuphostname.sh"
+ "Hostname Configuration|Set the system hostname and related DNS defaults.\n\nDo you want to continue?|$SCRIPT_DIR/setuphostname.sh"
  "Firewall Configuration|Tune firewall policies and per-port allowances.\n \nDo you want to continue?|$SCRIPT_DIR/setupfirewall.sh"
- #"Logging Configuration|Configure journald persistence, limits, and optional forwarding.\n\nDo you want to continue?|$SCRIPT_DIR/setuplogging.sh"
- #"System Updates|Refresh repositories and apply operating system updates before configuring other services.\n\nDo you want to continue?|$SCRIPT_DIR/setupupdates.sh"
- #"Identity Reset|Regenerate machine identity data, host keys, and cached state.\n\nDo you want to continue?|$SCRIPT_DIR/setupidentity.sh"
- #"Timezone|Pick the system timezone used for logs and shells.\n\nDo you want to continue?|$SCRIPT_DIR/setuptimezone.sh"
- #"Time Synchronization|Choose the timezone and preferred NTP service, then verify clock synchronization.\n\nDo you want to continue?|$SCRIPT_DIR/setuptime.sh"
- #"Locale & Keyboard|Configure system locales and keyboard layouts.\n\nDo you want to continue?|$SCRIPT_DIR/setuplocale.sh"
- #"User Accounts|Create operators, reset passwords, and manage sudo access.\n\nDo you want to continue?|$SCRIPT_DIR/setupusers.sh"
- #"SSH Hardening|Adjust SSH port, authentication policies, allow-lists, and keepalive tuning.\n\nDo you want to continue?|$SCRIPT_DIR/setupssh.sh"
- #"Guest Agent|Install the matching guest agent for your hypervisor and configure serial console access when supported.\n\nDo you want to continue?|$SCRIPT_DIR/setupguestagent.sh"
- #"Security Hardening|Apply kernel, service, and audit hardening controls.\n\nDo you want to continue?|$SCRIPT_DIR/setuphardening.sh"
+ "Logging Configuration|Configure journald persistence, limits, and optional forwarding.\n\nDo you want to continue?|$SCRIPT_DIR/setuplogging.sh"
+ "System Updates|Refresh repositories and apply operating system updates before configuring other services.\n\nDo you want to continue?|$SCRIPT_DIR/setupupdates.sh"
+ "Identity Reset|Regenerate machine identity data, host keys, and cached state.\n\nDo you want to continue?|$SCRIPT_DIR/setupidentity.sh"
+ "Timezone|Pick the system timezone used for logs and shells.\n\nDo you want to continue?|$SCRIPT_DIR/setuptimezone.sh"
+ "Time Synchronization|Choose the timezone and preferred NTP service, then verify clock synchronization.\n\nDo you want to continue?|$SCRIPT_DIR/setuptime.sh"
+ "Locale & Keyboard|Configure system locales and keyboard layouts.\n\nDo you want to continue?|$SCRIPT_DIR/setuplocale.sh"
+ "User Accounts|Create operators, reset passwords, and manage sudo access.\n\nDo you want to continue?|$SCRIPT_DIR/setupusers.sh"
+ "SSH Hardening|Adjust SSH port, authentication policies, allow-lists, and keepalive tuning.\n\nDo you want to continue?|$SCRIPT_DIR/setupssh.sh"
+ "Guest Agent|Install the matching guest agent for your hypervisor and configure serial console access when supported.\n\nDo you want to continue?|$SCRIPT_DIR/setupguestagent.sh"
+ "Security Hardening|Apply kernel, service, and audit hardening controls.\n\nDo you want to continue?|$SCRIPT_DIR/setuphardening.sh"
 )
 
 for DEFINITION in "${MODULE_DEFINITIONS[@]}"; do
@@ -68,8 +68,13 @@ for DEFINITION in "${MODULE_DEFINITIONS[@]}"; do
     esac
   fi
 
+  # run_step returns 0 (success), 200 (skipped), or non-zero (failure).
+  # With `set -e` active (from raffolib.sh), a bare non-zero would exit the script,
+  # so we must call it in a conditional to suppress errexit.
+  set +e
   run_step "$TITLE" "$MESSAGE" "$SCRIPT" 14 58 "$MODULE_ID"
   RC=$?
+  set -e
   MODULE_RESULTS["$MODULE_ID"]=$RC
 
   if [[ $RC -eq 0 ]]; then
@@ -77,7 +82,6 @@ for DEFINITION in "${MODULE_DEFINITIONS[@]}"; do
   elif [[ $RC -eq 200 && $PROFILE_APPLIED -eq 1 ]]; then
     echo -e " ${HOLD} ${YW}${TITLE} skipped via profile.${CL}"
   fi
-
 done
 
 echo
