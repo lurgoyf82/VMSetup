@@ -1,29 +1,17 @@
-#!/bin/bash
+#!/usr/bin/env bash
+set -euo pipefail
 
-echo "=== Firewall configuration ==="
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+source "$SCRIPT_DIR/raffolib.sh"
 
-# === state/summary helpers ===
-RAFFO_STATE_DIR=${RAFFO_STATE_DIR:-/var/lib/raffosetup}
-RAFFO_BACKUP_DIR=${RAFFO_BACKUP_DIR:-$RAFFO_STATE_DIR/backups}
 SETUP_SUMMARY_FILE=${SETUP_SUMMARY_FILE:-$RAFFO_STATE_DIR/setup-summary.txt}
 
 mkdir -p "$RAFFO_STATE_DIR" "$RAFFO_BACKUP_DIR"
-
-raffo_timestamp() {
-  date +%Y%m%d%H%M%S
-}
 
 log_summary() {
   local line="$1"
   mkdir -p "$(dirname "$SETUP_SUMMARY_FILE")"
   echo "$line" >>"$SETUP_SUMMARY_FILE"
-}
-
-trim() {
-  local var="$1"
-  var="${var#${var%%[![:space:]]*}}"
-  var="${var%${var##*[![:space:]]}}"
-  echo "$var"
 }
 
 SSH_PORT_STATE_FILE="/var/lib/raffosetup/ssh_port"
@@ -104,10 +92,17 @@ declare -a ALLOWED_RULES
 declare -a DENIED_RULES
 
 list_service_groups() {
-  echo "Available service groups:"
-  for name in "${!SERVICE_GROUPS[@]}"; do
-    printf '  - %s (%s)\n' "$name" "${SERVICE_GROUPS[$name]}"
-  done | sort
+  local tmp
+  tmp=$(mktemp)
+  {
+    echo "Available service groups:"
+    echo
+    for name in "${!SERVICE_GROUPS[@]}"; do
+      printf '  - %s (%s)\n' "$name" "${SERVICE_GROUPS[$name]}"
+    done | sort
+  } >"$tmp"
+  show_textbox "Service Groups" "$tmp" 18 70 1 || true
+  rm -f "$tmp"
 }
 
 ensure_ssh_access() {
@@ -258,44 +253,47 @@ ACTIVE_FW=$(for svc in ufw firewalld nftables iptables; do
   systemctl is-active --quiet "$svc" && echo "$svc"
 done | head -n1)
 
-if [ -z "$ACTIVE_FW" ]; then
-  echo "No active firewall detected."
-  read -p "Which one do you want to enable? [ufw/firewalld/nftables/iptables/none]: " CHOICE
+if [[ -z "$ACTIVE_FW" ]]; then
+  CHOICE=$(ask_menu "Firewall Backend" \
+    "No active firewall detected. Select a backend to enable." \
+    "ufw" "Enable ufw" \
+    "firewalld" "Enable firewalld" \
+    "nftables" "Enable nftables" \
+    "iptables" "Use iptables" \
+    "none" "Skip firewall configuration") || CHOICE="none"
   case "$CHOICE" in
     ufw|firewalld|nftables|iptables)
-      systemctl enable --now "$CHOICE" 2>/dev/null || echo "Could not enable $CHOICE."
-      ACTIVE_FW="$CHOICE"
+      if systemctl enable --now "$CHOICE" >/dev/null 2>&1; then
+        ACTIVE_FW="$CHOICE"
+        show_message "Firewall" "$CHOICE enabled for configuration."
+      else
+        show_message "Firewall" "Failed to enable $CHOICE."
+        exit 1
+      fi
       ;;
     *)
-      echo "No firewall selected."
+      show_message "Firewall" "No firewall selected. Skipping configuration."
       exit 0
       ;;
   esac
 fi
 
-echo "Using firewall: $ACTIVE_FW"
-sleep 1
+msg_info "Using firewall: $ACTIVE_FW"
+echo
 
 CURRENT_RULES="$(snapshot_firewall "$ACTIVE_FW")"
 CURRENT_RULES_STRIPPED="$(echo "$CURRENT_RULES" | tr -d ' \t\n')"
 BACKUP_PATH=""
 
 if [[ -n "$CURRENT_RULES_STRIPPED" ]]; then
-  echo "Existing firewall rules detected."
-  read -p "Do you want to back up the current rules before making changes? [yes(y)/no(n)]: " BACKUP_CHOICE
-  case "$BACKUP_CHOICE" in
-    y|Y|yes|YES)
-      BACKUP_PATH="$(backup_firewall_rules "$ACTIVE_FW" "$CURRENT_RULES")"
-      if [[ -n "$BACKUP_PATH" ]]; then
-        echo "Backup saved to $BACKUP_PATH"
-      else
-        echo "No backup created."
-      fi
-      ;;
-    *)
-      echo "Skipping firewall backup."
-      ;;
-  esac
+  if ask_yesno "Firewall Backup" "Existing rules detected. Back up the current configuration?"; then
+    BACKUP_PATH="$(backup_firewall_rules "$ACTIVE_FW" "$CURRENT_RULES")"
+    if [[ -n "$BACKUP_PATH" ]]; then
+      show_message "Firewall Backup" "Backup saved to:\n$BACKUP_PATH"
+    else
+      show_message "Firewall Backup" "No backup created."
+    fi
+  fi
 else
   CURRENT_RULES=""
 fi
@@ -304,13 +302,10 @@ ALLOWED_RULES=()
 DENIED_RULES=()
 
 # === global policy ===
-read -p "Default policy: block all (deny) or allow all (allow)? [deny/allow]: " POLICY
-POLICY=${POLICY,,}   # lowercase
-
-if [[ "$POLICY" != "deny" && "$POLICY" != "allow" ]]; then
-  echo "Unknown policy '$POLICY', defaulting to deny."
-  POLICY="deny"
-fi
+POLICY=$(ask_menu "Default Policy" "Select default inbound policy" \
+  "deny" "Block all (recommended)" \
+  "allow" "Allow all") || POLICY="deny"
+POLICY=${POLICY,,}
 
 NFT_CONF="/etc/nftables.conf"
 
@@ -365,34 +360,40 @@ auto_allow_ssh_port() {
   local port="$1"
   [[ -n "$port" ]] || return
   if [ "$POLICY" != "deny" ]; then
-    echo "SSH port ${port}/tcp permitted by default policy."
+    msg_info "SSH port ${port}/tcp permitted by default policy"
+    echo
     return
   fi
 
   case "$ACTIVE_FW" in
     ufw)
-      ufw allow "${port}/tcp" >/dev/null 2>&1 && \
-        echo "Ensured SSH port ${port}/tcp allowed via ufw."
+      if ufw allow "${port}/tcp" >/dev/null 2>&1; then
+        msg_ok "Ensured SSH port ${port}/tcp allowed via ufw"
+      fi
       ;;
     firewalld)
-      firewall-cmd --add-port="${port}/tcp" --permanent >/dev/null 2>&1 && \
-        firewall-cmd --reload >/dev/null 2>&1 && \
-        echo "Ensured SSH port ${port}/tcp allowed via firewalld."
+      if firewall-cmd --add-port="${port}/tcp" --permanent >/dev/null 2>&1; then
+        firewall-cmd --reload >/dev/null 2>&1 || true
+        msg_ok "Ensured SSH port ${port}/tcp allowed via firewalld"
+      fi
       ;;
     nftables)
       ensure_nftables_chains
       if ! nft list chain inet filter input 2>/dev/null | grep -Eq "tcp dport ${port} .*accept"; then
-        nft add rule inet filter input tcp dport "$port" counter accept >/dev/null 2>&1 && \
-          echo "Ensured SSH port ${port}/tcp allowed via nftables."
+        if nft add rule inet filter input tcp dport "$port" counter accept >/dev/null 2>&1; then
+          msg_ok "Ensured SSH port ${port}/tcp allowed via nftables"
+        fi
       fi
       ;;
     iptables)
       if ! iptables -C INPUT -p tcp --dport "$port" -j ACCEPT >/dev/null 2>&1; then
-        iptables -I INPUT -p tcp --dport "$port" -j ACCEPT >/dev/null 2>&1 && \
-          echo "Ensured SSH port ${port}/tcp allowed via iptables."
+        if iptables -I INPUT -p tcp --dport "$port" -j ACCEPT >/dev/null 2>&1; then
+          msg_ok "Ensured SSH port ${port}/tcp allowed via iptables"
+        fi
       fi
       ;;
   esac
+  echo
 }
 
 auto_allow_ssh_port "$SSH_PORT"
@@ -402,103 +403,122 @@ auto_allow_ssh_port "$SSH_PORT"
 ACTION_LABEL=$( [ "$POLICY" = "deny" ] && echo "ALLOW" || echo "DENY")
 RULE_ACTION=$( [ "$POLICY" = "deny" ] && echo "allow" || echo "deny")
 
-echo "You can reference service groups like: ${!SERVICE_GROUPS[@]}"
-echo "Type 'list' to show groups or 'add' to create a new one."
+if ask_yesno "Service Groups" "Review available service groups before continuing?"; then
+  list_service_groups
+fi
 
-while true; do
-  echo
-  read -p "Do you want to ${ACTION_LABEL} a port or service group? [yes(y)/no(n)]: " ANSW
-  case "$ANSW" in
-    y|Y|yes|YES)
-      selection=""
-      while true; do
-        read -p "Enter service group or port (space separated e.g. 22 443/tcp 80 8080): " selection
-        selection=$(trim "$selection")
-        [[ -z "$selection" ]] && break
-        selection_lower=${selection,,}
-        if [[ "$selection_lower" == "list" || "$selection" == "?" ]]; then
-          list_service_groups
-          continue
-        elif [[ "$selection_lower" == "add" ]]; then
-          read -p "New group name: " new_group
-          new_group=$(trim "$new_group")
-          new_group=${new_group,,}
-          if [[ -z "$new_group" ]]; then
-            echo "Group name cannot be empty."
-          else
-            read -p "Ports for group '$new_group' (space separated e.g. 22 443/tcp 80 8080): " new_ports
-            new_ports=$(trim "$new_ports")
-            if [[ -n "$new_ports" ]]; then
-              SERVICE_GROUPS[$new_group]="$new_ports"
-              echo "Service group '$new_group' added: $new_ports"
-            else
-              echo "No ports provided; group not added."
-            fi
-          fi
-          continue
-        fi
-        break
-      done
+while ask_yesno "Firewall Rules" "Do you want to ${ACTION_LABEL} a port or service group?"; do
+  group_name=""
+  port_specs=()
+  BREAK_OUTER=0
+  while true; do
+    mapfile -t sorted_groups < <(printf '%s\n' "${!SERVICE_GROUPS[@]}" | sort)
+    menu_options=()
+    for svc in "${sorted_groups[@]}"; do
+      menu_options+=("$svc" "${SERVICE_GROUPS[$svc]}")
+    done
+    menu_options+=("custom" "Enter ports manually")
+    menu_options+=("add" "Create or update a service group")
+    menu_options+=("show" "Show service group definitions")
 
-      if [[ -z "$selection" ]]; then
-        echo "No selection provided."
-        continue
-      fi
-
-      selection_lower=${selection,,}
-      group_name=""
-      port_specs=()
-      if [[ -n "${SERVICE_GROUPS[$selection_lower]:-}" ]]; then
-        group_name="$selection_lower"
-        read -r -a port_specs <<< "${SERVICE_GROUPS[$selection_lower]}"
-      else
-        read -r -a port_specs <<< "$selection"
-      fi
-
-      if [[ ${#port_specs[@]} -eq 0 ]]; then
-        echo "No valid ports found for selection '$selection'."
-        continue
-      fi
-
-      read -p "Limit rule to a specific source IP/CIDR (leave blank for any): " SOURCE_INPUT
-      SOURCE_INPUT=$(trim "$SOURCE_INPUT")
-
-      for port_spec in "${port_specs[@]}"; do
-        port_spec=$(trim "$port_spec")
-        [[ -z "$port_spec" ]] && continue
-        read -r PORT_NUMBER PROTOCOL <<< "$(parse_port_spec "$port_spec")"
-        PORT_NUMBER=$(trim "$PORT_NUMBER")
-        PROTOCOL=${PROTOCOL,,}
-        if [[ -z "$PORT_NUMBER" || -z "$PROTOCOL" ]]; then
-          echo "Skipping invalid specification '$port_spec'."
-          continue
-        fi
-        if [[ "$RULE_ACTION" == "deny" && "$PORT_NUMBER" == "22" && "$PROTOCOL" == "tcp" ]]; then
-          echo "Skipping rule for SSH (22/tcp); SSH access must remain allowed."
-          continue
-        fi
-        apply_rule "$RULE_ACTION" "$PORT_NUMBER" "$PROTOCOL" "$SOURCE_INPUT"
-        desc="${PORT_NUMBER}/${PROTOCOL}"
-        if [[ -n "$SOURCE_INPUT" ]]; then
-          desc+=" from $SOURCE_INPUT"
-        fi
-        if [[ -n "$group_name" ]]; then
-          desc+=" (group: $group_name)"
-        fi
-        if [[ "$RULE_ACTION" == "allow" ]]; then
-          ALLOWED_RULES+=("$desc")
-          echo "Allowed $desc"
-        else
-          DENIED_RULES+=("$desc")
-          echo "Denied $desc"
-        fi
-      done
-      ;;
-    *)
-      echo "No more rules to edit."
+    if ! selection=$(ask_menu "Firewall Rules" "Choose a service group or action" --size 20 70 12 "${menu_options[@]}"); then
+      BREAK_OUTER=1
       break
-      ;;
-  esac
+    fi
+
+    case "$selection" in
+      custom)
+        if ! manual=$(ask_input "Custom Ports" "Enter ports or port/protocol pairs (space separated)" "" 10 70); then
+          continue
+        fi
+        manual=$(raffo_trim "$manual")
+        if [[ -z "$manual" ]]; then
+          show_message "Custom Ports" "No ports entered."
+          continue
+        fi
+        read -r -a port_specs <<<"$manual"
+        group_name=""
+        break
+        ;;
+      add)
+        if ! new_group=$(ask_input "Service Group" "Enter group name" "" 10 60); then
+          continue
+        fi
+        new_group=$(raffo_trim "${new_group,,}")
+        if [[ -z "$new_group" ]]; then
+          show_message "Service Group" "Group name cannot be empty."
+          continue
+        fi
+        if ! new_ports=$(ask_input "Service Group Ports" "Enter ports for '$new_group' (space separated)" "" 10 70); then
+          continue
+        fi
+        new_ports=$(raffo_trim "$new_ports")
+        if [[ -z "$new_ports" ]]; then
+          show_message "Service Group" "No ports provided; group not added."
+          continue
+        fi
+        SERVICE_GROUPS[$new_group]="$new_ports"
+        show_message "Service Group" "Service group '$new_group' saved with ports:\n$new_ports"
+        continue
+        ;;
+      show)
+        list_service_groups
+        continue
+        ;;
+      *)
+        group_name="$selection"
+        read -r -a port_specs <<<"${SERVICE_GROUPS[$selection]}"
+        break
+        ;;
+    esac
+  done
+
+  if [[ $BREAK_OUTER -eq 1 ]]; then
+    break
+  fi
+
+  if [[ ${#port_specs[@]} -eq 0 ]]; then
+    show_message "Firewall Rules" "No ports selected."
+    continue
+  fi
+
+  SOURCE_INPUT=""
+  if SOURCE_RAW=$(ask_input "Rule Source" "Limit rule to a specific source IP/CIDR (leave blank for any)" "" 10 70); then
+    SOURCE_INPUT=$(raffo_trim "$SOURCE_RAW")
+  else
+    SOURCE_INPUT=""
+  fi
+
+  for port_spec in "${port_specs[@]}"; do
+    port_spec=$(raffo_trim "$port_spec")
+    [[ -z "$port_spec" ]] && continue
+    read -r PORT_NUMBER PROTOCOL <<<"$(parse_port_spec "$port_spec")"
+    PORT_NUMBER=$(raffo_trim "$PORT_NUMBER")
+    PROTOCOL=${PROTOCOL,,}
+    if [[ -z "$PORT_NUMBER" || -z "$PROTOCOL" ]]; then
+      show_message "Firewall Rules" "Skipping invalid specification '$port_spec'."
+      continue
+    fi
+    if [[ "$RULE_ACTION" == "deny" && "$PORT_NUMBER" == "22" && "$PROTOCOL" == "tcp" ]]; then
+      show_message "Firewall Rules" "Skipping rule for SSH (22/tcp); SSH access must remain allowed."
+      continue
+    fi
+    apply_rule "$RULE_ACTION" "$PORT_NUMBER" "$PROTOCOL" "$SOURCE_INPUT"
+    desc="${PORT_NUMBER}/${PROTOCOL}"
+    if [[ -n "$SOURCE_INPUT" ]]; then
+      desc+=" from $SOURCE_INPUT"
+    fi
+    if [[ -n "$group_name" ]]; then
+      desc+=" (group: $group_name)"
+    fi
+    if [[ "$RULE_ACTION" == "allow" ]]; then
+      ALLOWED_RULES+=("$desc")
+      msg_ok "Allowed $desc"
+    else
+      DENIED_RULES+=("$desc")
+      msg_ok "Denied $desc"
+    fi
+  done
 done
 
 PERSIST_MESSAGE=""
@@ -584,11 +604,13 @@ if [[ -n "$IPTABLES_PERSISTENCE_NOTE" ]]; then
   SUMMARY_LINES+=("  $IPTABLES_PERSISTENCE_NOTE")
 fi
 
-echo
-echo "Firewall configuration summary:"
+SUMMARY_FILE=$(mktemp)
 for line in "${SUMMARY_LINES[@]}"; do
-  echo "$line"
+  printf '%s\n' "$line" >>"$SUMMARY_FILE"
   log_summary "$line"
 done
 
-echo "Firewall configuration complete."
+show_textbox "Firewall Summary" "$SUMMARY_FILE" 20 78 1 || true
+rm -f "$SUMMARY_FILE"
+
+show_message "Firewall" "Firewall configuration complete."

@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
-source /root/raffolib.sh
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+source "$SCRIPT_DIR/raffolib.sh"
 
 if ! command -v timedatectl >/dev/null 2>&1; then
   msg_error "timedatectl not available"
@@ -24,9 +25,7 @@ for tz in "${available_timezones[@]}"; do
   menu_args+=("$tz" " ")
 done
 
-selected_timezone=$(whiptail --backtitle "Raffo Setup" \
-  --title "System Timezone" \
-  --menu "Select the timezone for this system" 20 70 18 "${menu_args[@]}" 3>&2 2>&1 1>&3) || {
+selected_timezone=$(ask_menu "System Timezone" "Select the timezone for this system" --size 20 70 18 "${menu_args[@]}") || {
     msg_ok "Time synchronization configuration skipped"
     exit 0
   }

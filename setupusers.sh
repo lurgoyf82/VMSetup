@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-source /root/raffolib.sh
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+source "$SCRIPT_DIR/raffolib.sh"
 
 if [[ $EUID -ne 0 ]]; then
   msg_error "This helper must be run as root"

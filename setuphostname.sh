@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
-source /root/raffolib.sh
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+source "$SCRIPT_DIR/raffolib.sh"
 
 HOSTS_FILE="/etc/hosts"
 RESOLVED_DROPIN="/etc/systemd/resolved.conf.d/raffo-domains.conf"
@@ -110,7 +111,9 @@ msg_info "Current hostname: ${current_hostname:-unknown}"
 
 target_hostname=""
 while true; do
-  read -r -p "Enter new hostname or FQDN (leave blank to keep current): " input
+  if ! input=$(ask_input "Hostname" "Enter new hostname or FQDN (leave blank to keep current)" "$current_hostname"); then
+    input=""
+  fi
   input="$(raffo_trim "${input:-}")"
   if [[ -z "$input" ]]; then
     target_hostname="$current_hostname"
@@ -121,7 +124,7 @@ while true; do
     target_hostname="$lower"
     break
   fi
-  msg_error "Hostname must comply with RFC 1123 (letters, digits, hyphens, 1-63 chars per label)"
+  show_message "Hostname" "Hostname must comply with RFC 1123 (letters, digits, hyphens, 1-63 chars per label)."
 done
 
 if [[ -z "$target_hostname" ]]; then
@@ -170,35 +173,32 @@ if [[ "$target_hostname" == *.* ]]; then
   default_suffix="${target_hostname#*.}"
 fi
 
-read -r -p "Configure DNS search suffix? [y/N]: " add_suffix
-case "${add_suffix,,}" in
-  y|yes)
-    prompt="Enter DNS search suffix"
-    if [[ -n "$default_suffix" ]]; then
-      prompt="$prompt [$default_suffix]"
-    fi
-    prompt+=": "
-    read -r -p "$prompt" suffix_input
-    suffix_input="$(raffo_trim "${suffix_input:-}")"
-    if [[ -z "$suffix_input" && -n "$default_suffix" ]]; then
-      suffix_input="$default_suffix"
-    fi
-    suffix_input="${suffix_input,,}"
-    if [[ -n "$suffix_input" ]]; then
-      if is_valid_hostname "$suffix_input"; then
-        if ! configure_search_domain "$suffix_input"; then
-          msg_error "DNS search suffix configuration encountered issues"
-        fi
-      else
-        msg_error "Search suffix must be a valid domain; skipping configuration"
+if ask_yesno "DNS Search Suffix" "Configure DNS search suffix?"; then
+  suffix_prompt="Enter DNS search suffix"
+  if [[ -n "$default_suffix" ]]; then
+    suffix_prompt+=" (leave blank to use $default_suffix)"
+  fi
+  if ! suffix_input=$(ask_input "DNS Search Suffix" "$suffix_prompt" "$default_suffix"); then
+    suffix_input="$default_suffix"
+  fi
+  suffix_input="$(raffo_trim "${suffix_input:-}")"
+  if [[ -z "$suffix_input" ]]; then
+    suffix_input="$default_suffix"
+  fi
+  suffix_input="${suffix_input,,}"
+  if [[ -n "$suffix_input" ]]; then
+    if is_valid_hostname "$suffix_input"; then
+      if ! configure_search_domain "$suffix_input"; then
+        msg_error "DNS search suffix configuration encountered issues"
       fi
     else
-      msg_info "No suffix provided; skipping configuration"
+      show_message "DNS Search Suffix" "Search suffix must be a valid domain; skipping configuration."
     fi
-    ;;
-  *)
-    msg_info "DNS search suffix unchanged"
-    ;;
-esac
+  else
+    msg_info "No suffix provided; skipping configuration"
+  fi
+else
+  msg_info "DNS search suffix unchanged"
+fi
 
 msg_ok "Hostname configuration complete"

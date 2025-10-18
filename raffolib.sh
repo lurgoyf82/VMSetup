@@ -216,28 +216,102 @@ msg_ok()    { echo -e "${BFR} ${CM} ${GN}${1}${CL}"; }
 msg_error() { echo -e "${BFR} ${CROSS} ${RD}${1}${CL}"; }
 
 # --- whiptail helpers ---
+_raffo_calc_menu_size() {
+  local -n _height_ref="$1"
+  local -n _width_ref="$2"
+  local -n _list_height_ref="$3"
+  local items="$4"
+
+  if (( items <= 0 )); then
+    _height_ref=10
+    _width_ref=50
+    _list_height_ref=1
+    return
+  fi
+
+  if (( items <= 6 )); then
+    _height_ref=15
+    _width_ref=60
+    _list_height_ref=items
+    ((_list_height_ref<=0)) && _list_height_ref=6
+    return
+  fi
+
+  _height_ref=20
+  _width_ref=70
+  _list_height_ref=items
+  if (( _list_height_ref > 18 )); then
+    _list_height_ref=18
+  fi
+}
+
 ask_yesno() {
   local TITLE="$1"; local MESSAGE="$2"
+  local HEIGHT="${3:-12}"; local WIDTH="${4:-65}"
   whiptail --backtitle "Raffo Setup" --title "$TITLE" \
-           --yesno "$MESSAGE" 12 65
+           --yesno "$MESSAGE" "$HEIGHT" "$WIDTH"
 }
 
 ask_menu() {
   local TITLE="$1"; local MESSAGE="$2"; shift 2
+  local HEIGHT=15 WIDTH=60 LIST_HEIGHT=6
+  if [[ "${1:-}" == "--size" ]]; then
+    HEIGHT="$2"; WIDTH="$3"; LIST_HEIGHT="$4"; shift 4
+  else
+    local ITEMS=$(( $# / 2 ))
+    _raffo_calc_menu_size HEIGHT WIDTH LIST_HEIGHT "$ITEMS"
+  fi
   whiptail --backtitle "Raffo Setup" --title "$TITLE" \
-           --menu "$MESSAGE" 15 60 6 "$@" 3>&2 2>&1 1>&3
+           --menu "$MESSAGE" "$HEIGHT" "$WIDTH" "$LIST_HEIGHT" "$@" 3>&2 2>&1 1>&3
 }
 
 ask_checklist() {
   local TITLE="$1"; local MESSAGE="$2"; shift 2
+  local HEIGHT=16 WIDTH=60 LIST_HEIGHT=8
+  if [[ "${1:-}" == "--size" ]]; then
+    HEIGHT="$2"; WIDTH="$3"; LIST_HEIGHT="$4"; shift 4
+  else
+    local ITEMS=$(( $# / 3 ))
+    _raffo_calc_menu_size HEIGHT WIDTH LIST_HEIGHT "$ITEMS"
+  fi
   whiptail --backtitle "Raffo Setup" --title "$TITLE" \
-           --checklist "$MESSAGE" 16 60 8 "$@" 3>&2 2>&1 1>&3
+           --checklist "$MESSAGE" "$HEIGHT" "$WIDTH" "$LIST_HEIGHT" "$@" 3>&2 2>&1 1>&3
 }
 
 ask_input() {
   local TITLE="$1"; local MESSAGE="$2"; local DEFAULT="${3:-}"
+  local HEIGHT="${4:-10}"; local WIDTH="${5:-60}"
   whiptail --backtitle "Raffo Setup" --title "$TITLE" \
-           --inputbox "$MESSAGE" 10 60 "$DEFAULT" 3>&1 1>&2 2>&3
+           --inputbox "$MESSAGE" "$HEIGHT" "$WIDTH" "$DEFAULT" 3>&1 1>&2 2>&3
+}
+
+ask_password() {
+  local TITLE="$1"; local MESSAGE="$2"; local DEFAULT="${3:-}"
+  local HEIGHT="${4:-10}"; local WIDTH="${5:-60}"
+  whiptail --backtitle "Raffo Setup" --title "$TITLE" \
+           --passwordbox "$MESSAGE" "$HEIGHT" "$WIDTH" "$DEFAULT" 3>&1 1>&2 2>&3
+}
+
+show_message() {
+  local TITLE="$1"; local MESSAGE="$2"
+  local HEIGHT="${3:-12}"; local WIDTH="${4:-70}"
+  whiptail --backtitle "Raffo Setup" --title "$TITLE" \
+           --msgbox "$MESSAGE" "$HEIGHT" "$WIDTH"
+}
+
+show_textbox() {
+  local TITLE="$1"; local FILE="$2"
+  local HEIGHT="${3:-20}"; local WIDTH="${4:-78}"; local SCROLL="${5:-0}"
+  local EXTRA=(--textbox "$FILE" "$HEIGHT" "$WIDTH")
+  if [[ "$SCROLL" == "1" ]]; then
+    EXTRA=(--textbox "$FILE" "$HEIGHT" "$WIDTH" --scrolltext)
+  fi
+  whiptail --backtitle "Raffo Setup" --title "$TITLE" "${EXTRA[@]}"
+}
+
+pause_for_ack() {
+  local TITLE="$1"; local MESSAGE="$2"
+  show_message "$TITLE" "$MESSAGE" 10 60
 }
 
 # --- standardized step wrapper (Proxmox look) ---

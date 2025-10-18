@@ -71,12 +71,12 @@ apply_sysctl_setting "net.ipv4.conf.all.log_martians" 1
 apply_sysctl_setting "net.ipv4.conf.default.log_martians" 1
 msg_ok "Kernel sysctl parameters updated"
 
-read -rp "Disable IPv6 system-wide? [y/N]: " DISABLE_IPV6
 IPV6_FILE="/etc/sysctl.d/99-raffo-ipv6.conf"
 if [[ -f "$IPV6_FILE" ]]; then
   raffo_backup "$IPV6_FILE" "99-raffo-ipv6.conf" >/dev/null 2>&1 || true
 fi
-if [[ "$DISABLE_IPV6" =~ ^[Yy]$ ]]; then
+
+if ask_yesno "IPv6" "Disable IPv6 system-wide?"; then
   cat >"$IPV6_FILE" <<'IPCONF'
 # Managed by Raffo Setup (setuphardening.sh)
 net.ipv6.conf.all.disable_ipv6 = 1
@@ -181,10 +181,9 @@ for svc in "${ENABLED_SERVICES[@]}"; do
   if should_skip_service "$svc"; then
     continue
   fi
-  read -rp "Disable service $svc ? [y/N]: " disable_choice
-  if [[ "$disable_choice" =~ ^[Yy]$ ]]; then
+  if ask_yesno "Disable Service" "Disable service $svc?"; then
     systemctl disable --now "$svc" >/dev/null 2>&1 || true
-    echo "   -> $svc disabled"
+    msg_ok "$svc disabled"
   fi
 done
 msg_ok "Service review complete"
