@@ -1,13 +1,45 @@
 #!/usr/bin/env bash
-set -euo pipefail
+# ^ Shebang: ensures the script is executed with the `bash` interpreter located
+#   via `/usr/bin/env` for portability across different environments.
+
+# ---------------------------------------------------------------------------
+# Safety switches (keep script predictable and fail fast)
+# ---------------------------------------------------------------------------
+set -Eeuo pipefail
+# set -E  : ensure ERR traps propagate through functions and subshells
+# set -e  : abort immediately when a command exits with a non-zero status
+# set -u  : treat expansion of unset variables as an error condition
+# set -o pipefail : fail an entire pipeline if any command inside fails
+
+# Emit a descriptive diagnostic message before exiting on any failure. The
+# shell automatically aborts thanks to `set -e`, but this trap documents the
+# failing command for easier troubleshooting.
+trap 'rc=$?; echo "[ERROR] Command \"${BASH_COMMAND}\" failed with exit code ${rc} at line ${LINENO}." >&2; exit ${rc}' ERR
+
+# Resolve the directory that contains this script, even when invoked through a
+# symbolic link, so that we can reliably locate bundled helper libraries.
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-source "$SCRIPT_DIR/raffolib.sh"
+
+# Load shared dialog / UI helpers. Abort with a meaningful message if the
+# helper library is missing.
+if ! source "$SCRIPT_DIR/raffolib.sh"; then
+  echo "Error: Unable to load required library raffolib.sh from $SCRIPT_DIR" >&2
+  exit 1
+fi
 
 escape_sed_regex() {
-  printf '%s' "$1" | sed -e 's|[][\\.^$*+?{}()|/&]|\\&|g'
+  # Escape every character that carries special meaning in a basic regular
+  # expression so we can safely embed user-provided text in `sed` patterns.
+  if ! printf '%s' "$1" | sed -e 's|[][\\.^$*+?{}()|/&]|\\&|g'; then
+    echo "Error: Failed to escape text for sed expression." >&2
+    return 1
+  fi
 }
 
 detect_active_firewall() {
+  # Probe common Linux firewall services in priority order and return the name
+  # of the first active implementation (if any) so we can tailor follow-up
+  # configuration changes.
   local svc
   for svc in ufw firewalld nftables iptables; do
     if systemctl is-active --quiet "$svc"; then
@@ -19,34 +51,65 @@ detect_active_firewall() {
 }
 
 ensure_nftables_chains() {
-  command -v nft >/dev/null 2>&1 || return 1
-  nft list table inet filter >/dev/null 2>&1 || nft add table inet filter >/dev/null 2>&1 || true
-  nft list chain inet filter input >/dev/null 2>&1 || \
-    nft add chain inet filter input '{ type filter hook input priority 0; policy accept; }' >/dev/null 2>&1 || true
+  # Guarantee the nftables filter table and input chain exist before we append
+  # emergency rules; missing tables are created on the fly.
+  if ! command -v nft >/dev/null 2>&1; then
+    echo "Warning: nft command not found; skipping nftables emergency rule setup." >&2
+    return 1
+  fi
+  if ! nft list table inet filter >/dev/null 2>&1; then
+    if ! nft add table inet filter >/dev/null 2>&1; then
+      echo "Warning: Unable to create nftables inet filter table." >&2
+      return 1
+    fi
+  fi
+  if ! nft list chain inet filter input >/dev/null 2>&1; then
+    if ! nft add chain inet filter input '{ type filter hook input priority 0; policy accept; }' >/dev/null 2>&1; then
+      echo "Warning: Unable to create nftables input chain." >&2
+      return 1
+    fi
+  fi
 }
 
 ensure_emergency_ssh_rule() {
+  # Ensure that emergency SSH access remains possible by inserting a rule
+  # tailored to the active firewall implementation.
   local firewall
   firewall=$(detect_active_firewall) || return 0
 
   case "$firewall" in
     ufw)
-      command -v ufw >/dev/null 2>&1 && \
-        ufw allow 22/tcp comment 'Raffo emergency SSH' >/dev/null 2>&1 || true
+      if command -v ufw >/dev/null 2>&1; then
+        if ! ufw allow 22/tcp comment 'Raffo emergency SSH' >/dev/null 2>&1; then
+          echo "Warning: Unable to insert emergency SSH rule via ufw." >&2
+        fi
+      else
+        echo "Warning: ufw command missing; cannot adjust ufw firewall." >&2
+      fi
       ;;
     firewalld)
-      command -v firewall-cmd >/dev/null 2>&1 && \
-        firewall-cmd --add-service=ssh >/dev/null 2>&1 || true
+      if command -v firewall-cmd >/dev/null 2>&1; then
+        if ! firewall-cmd --add-service=ssh >/dev/null 2>&1; then
+          echo "Warning: Unable to add SSH service through firewalld." >&2
+        fi
+      else
+        echo "Warning: firewall-cmd command missing; cannot adjust firewalld." >&2
+      fi
       ;;
     nftables)
       if ensure_nftables_chains; then
-        nft add rule inet filter input tcp dport 22 counter accept >/dev/null 2>&1 || true
+        if ! nft add rule inet filter input tcp dport 22 counter accept >/dev/null 2>&1; then
+          echo "Warning: Unable to append nftables emergency SSH rule." >&2
+        fi
       fi
       ;;
     iptables)
       if command -v iptables >/dev/null 2>&1; then
-        iptables -C INPUT -p tcp --dport 22 -j ACCEPT >/dev/null 2>&1 || \
-          iptables -I INPUT -p tcp --dport 22 -j ACCEPT >/dev/null 2>&1 || true
+        if ! iptables -C INPUT -p tcp --dport 22 -j ACCEPT >/dev/null 2>&1; then
+          if ! iptables -I INPUT -p tcp --dport 22 -j ACCEPT >/dev/null 2>&1; then
+            echo "Warning: Unable to insert iptables emergency SSH rule." >&2
+          fi
+        fi
       fi
       ;;
   esac
@@ -55,18 +118,27 @@ ensure_emergency_ssh_rule() {
 }
 
 preview_diff() {
+  # Display a unified diff between the original and staged configuration so
+  # the operator can review pending changes.
   local title="$1" base="$2" new_file="$3"
   local diff_file
-  diff_file=$(mktemp)
+  if ! diff_file=$(mktemp); then
+    echo "Error: Unable to allocate temporary file for diff preview." >&2
+    return 1
+  fi
   if diff -u "$base" "$new_file" >"$diff_file"; then
     show_message "$title" "No differences detected."
   else
     show_textbox "$title" "$diff_file" 20 78 1
   fi
-  rm -f "$diff_file"
+  if ! rm -f "$diff_file"; then
+    echo "Warning: Temporary diff file $diff_file could not be removed." >&2
+  fi
 }
 
 duplicate_ip_check() {
+  # Use ARP probes to determine whether the requested address is already in
+  # use on the local network, prompting the operator if a conflict is seen.
   local iface="$1" new_ip="$2"
   local plain_ip
   plain_ip="${new_ip%%/*}"
