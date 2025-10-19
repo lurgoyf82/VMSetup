@@ -12,117 +12,149 @@ MESSAGE="Do you want to inspect your current network configuration?"
 
 if ask_yesno "$TITLE" "$MESSAGE"; then
   INFO_FILE=""
-  cleanup_info_file() {
+  DATA_FILE=""
+
+  cleanup_files() {
     [[ -n "$INFO_FILE" && -f "$INFO_FILE" ]] && rm -f "$INFO_FILE"
+    [[ -n "$DATA_FILE" && -f "$DATA_FILE" ]] && rm -f "$DATA_FILE"
   }
-  trap cleanup_info_file EXIT
+  trap cleanup_files EXIT
+
   INFO_FILE="$(mktemp)"
+  DATA_FILE="$(mktemp)"
 
-  {
-    echo "Raffo Setup — Network report"
-    echo "Generated on $(date -Is)"
-    echo
-
-    if ! command -v ip >/dev/null 2>&1; then
-      echo "The 'ip' command from iproute2 is required to inspect the network but was not found."
-      echo "Please install iproute2 and rerun this module."
+  if ! "$SCRIPT_DIR/inspectnetwork.sh" --dump-shell >"$DATA_FILE" 2>"$INFO_FILE"; then
+    if command -v whiptail >/dev/null 2>&1; then
+      whiptail --backtitle "Raffo Setup" \
+               --title "Network inspection failed" \
+               --textbox "$INFO_FILE" 15 80 || true
     else
-      IPV4_DEFAULT=$(ip -4 route show default || true)
-      IPV6_DEFAULT=$(ip -6 route show default || true)
-
-      echo "Default routes:"
-      if [[ -n "${IPV4_DEFAULT//[[:space:]]/}" ]]; then
-        echo "  IPv4:"
-        echo "$IPV4_DEFAULT" | sed 's/^/    /'
-      else
-        echo "  IPv4: (none detected)"
-      fi
-      if [[ -n "${IPV6_DEFAULT//[[:space:]]/}" ]]; then
-        echo "  IPv6:"
-        echo "$IPV6_DEFAULT" | sed 's/^/    /'
-      else
-        echo "  IPv6: (none detected)"
-      fi
-      echo
-
-      mapfile -t INTERFACES < <(ip -o link show | awk -F': ' '{print $2}')
-      if [[ ${#INTERFACES[@]} -eq 0 ]]; then
-        echo "No network interfaces detected."
-      else
-        for IFACE in "${INTERFACES[@]}"; do
-          [[ -z "$IFACE" ]] && continue
-          echo "Interface: $IFACE"
-
-          LINK_LINE=$(ip -o link show dev "$IFACE" 2>/dev/null || true)
-          if [[ -n "$LINK_LINE" ]]; then
-            STATE=$(awk '{for (i=1; i<=NF; i++) if ($i == "state") {print $(i+1); exit}}' <<<"$LINK_LINE")
-            MAC=$(awk '{for (i=1; i<=NF; i++) if ($i == "link/ether") {print $(i+1); exit}}' <<<"$LINK_LINE")
-            MTU=$(awk '{for (i=1; i<=NF; i++) if ($i == "mtu") {print $(i+1); exit}}' <<<"$LINK_LINE")
-            [[ -n "$STATE" ]] && echo "  State: $STATE"
-            [[ -n "$MTU" ]] && echo "  MTU: $MTU"
-            [[ -n "$MAC" ]] && echo "  MAC: $MAC"
-          else
-            echo "  Unable to read link information."
-          fi
-
-          IPV4_ADDRS=$(ip -o -4 addr show dev "$IFACE" 2>/dev/null || true)
-          if [[ -n "$IPV4_ADDRS" ]]; then
-            echo "  IPv4 addresses:"
-            while IFS= read -r LINE; do
-              [[ -z "$LINE" ]] && continue
-              ADDR=$(awk '{print $4}' <<<"$LINE")
-              META=$(awk '{for (i=1; i<=4; ++i) $i=""; sub(/^ +/, ""); print}' <<<"$LINE")
-              if [[ -n "$META" ]]; then
-                echo "    $ADDR ($META)"
-              else
-                echo "    $ADDR"
-              fi
-            done <<<"$IPV4_ADDRS"
-          else
-            echo "  IPv4 addresses: (none)"
-          fi
-
-          IPV6_ADDRS=$(ip -o -6 addr show dev "$IFACE" 2>/dev/null || true)
-          if [[ -n "$IPV6_ADDRS" ]]; then
-            echo "  IPv6 addresses:"
-            while IFS= read -r LINE; do
-              [[ -z "$LINE" ]] && continue
-              ADDR=$(awk '{print $4}' <<<"$LINE")
-              META=$(awk '{for (i=1; i<=4; ++i) $i=""; sub(/^ +/, ""); print}' <<<"$LINE")
-              if [[ -n "$META" ]]; then
-                echo "    $ADDR ($META)"
-              else
-                echo "    $ADDR"
-              fi
-            done <<<"$IPV6_ADDRS"
-          else
-            echo "  IPv6 addresses: (none)"
-          fi
-
-          DEV_ROUTES=$(ip -4 route show dev "$IFACE" 2>/dev/null | sed 's/^/    /' || true)
-          if [[ -n "${DEV_ROUTES//[[:space:]]/}" ]]; then
-            echo "  IPv4 routes:"
-            echo "$DEV_ROUTES"
-          fi
-
-          DEV6_ROUTES=$(ip -6 route show dev "$IFACE" 2>/dev/null | sed 's/^/    /' || true)
-          if [[ -n "${DEV6_ROUTES//[[:space:]]/}" ]]; then
-            echo "  IPv6 routes:"
-            echo "$DEV6_ROUTES"
-          fi
-
-          echo
-        done
-      fi
+      cat "$INFO_FILE"
     fi
-  } >"$INFO_FILE"
+    exit 1
+  fi
+
+  # shellcheck disable=SC1090
+  source "$DATA_FILE"
+
+  MESSAGE_BODY=$'Raffo Setup — Network report\n'
+  if [[ -n "${NETWORK_REPORT_TIME:-}" ]]; then
+    MESSAGE_BODY+=$'Generated on '
+    MESSAGE_BODY+="${NETWORK_REPORT_TIME}"
+    MESSAGE_BODY+=$'\n\n'
+  else
+    MESSAGE_BODY+=$'Generated on (unknown)\n\n'
+  fi
+
+  if [[ -n "${NETWORK_ERROR:-}" ]]; then
+    MESSAGE_BODY+="${NETWORK_ERROR}"
+    [[ "${NETWORK_ERROR}" == *$'\n' ]] || MESSAGE_BODY+=$'\n'
+  else
+    MESSAGE_BODY+=$'Default routes:\n'
+
+    if [[ ${#NETWORK_DEFAULT_ROUTES_IPV4[@]} -gt 0 ]]; then
+      MESSAGE_BODY+=$'  IPv4:\n'
+      for LINE in "${NETWORK_DEFAULT_ROUTES_IPV4[@]}"; do
+        MESSAGE_BODY+=$'    '
+        MESSAGE_BODY+="${LINE}"
+        MESSAGE_BODY+=$'\n'
+      done
+    else
+      MESSAGE_BODY+=$'  IPv4: (none detected)\n'
+    fi
+
+    if [[ ${#NETWORK_DEFAULT_ROUTES_IPV6[@]} -gt 0 ]]; then
+      MESSAGE_BODY+=$'  IPv6:\n'
+      for LINE in "${NETWORK_DEFAULT_ROUTES_IPV6[@]}"; do
+        MESSAGE_BODY+=$'    '
+        MESSAGE_BODY+="${LINE}"
+        MESSAGE_BODY+=$'\n'
+      done
+    else
+      MESSAGE_BODY+=$'  IPv6: (none detected)\n'
+    fi
+
+    MESSAGE_BODY+=$'\n'
+
+    if [[ ${#NETWORK_INTERFACES[@]} -eq 0 ]]; then
+      MESSAGE_BODY+=$'No network interfaces detected.\n'
+    else
+      for IFACE in "${NETWORK_INTERFACES[@]}"; do
+        [[ -z "$IFACE" ]] && continue
+        MESSAGE_BODY+=$'Interface: '
+        MESSAGE_BODY+="${IFACE}"
+        MESSAGE_BODY+=$'\n'
+
+        if [[ -n "${NETWORK_INTERFACE_STATE[$IFACE]:-}" ]]; then
+          MESSAGE_BODY+=$'  State: '
+          MESSAGE_BODY+="${NETWORK_INTERFACE_STATE[$IFACE]}"
+          MESSAGE_BODY+=$'\n'
+        fi
+        if [[ -n "${NETWORK_INTERFACE_MTU[$IFACE]:-}" ]]; then
+          MESSAGE_BODY+=$'  MTU: '
+          MESSAGE_BODY+="${NETWORK_INTERFACE_MTU[$IFACE]}"
+          MESSAGE_BODY+=$'\n'
+        fi
+        if [[ -n "${NETWORK_INTERFACE_MAC[$IFACE]:-}" ]]; then
+          MESSAGE_BODY+=$'  MAC: '
+          MESSAGE_BODY+="${NETWORK_INTERFACE_MAC[$IFACE]}"
+          MESSAGE_BODY+=$'\n'
+        fi
+
+        if [[ -n "${NETWORK_INTERFACE_IPV4_ADDRS[$IFACE]:-}" ]]; then
+          MESSAGE_BODY+=$'  IPv4 addresses:\n'
+          while IFS= read -r LINE; do
+            MESSAGE_BODY+=$'    '
+            MESSAGE_BODY+="${LINE}"
+            MESSAGE_BODY+=$'\n'
+          done <<<"${NETWORK_INTERFACE_IPV4_ADDRS[$IFACE]}"
+        else
+          MESSAGE_BODY+=$'  IPv4 addresses: (none)\n'
+        fi
+
+        if [[ -n "${NETWORK_INTERFACE_IPV6_ADDRS[$IFACE]:-}" ]]; then
+          MESSAGE_BODY+=$'  IPv6 addresses:\n'
+          while IFS= read -r LINE; do
+            MESSAGE_BODY+=$'    '
+            MESSAGE_BODY+="${LINE}"
+            MESSAGE_BODY+=$'\n'
+          done <<<"${NETWORK_INTERFACE_IPV6_ADDRS[$IFACE]}"
+        else
+          MESSAGE_BODY+=$'  IPv6 addresses: (none)\n'
+        fi
+
+        if [[ -n "${NETWORK_INTERFACE_IPV4_ROUTES[$IFACE]:-}" ]]; then
+          MESSAGE_BODY+=$'  IPv4 routes:\n'
+          while IFS= read -r LINE; do
+            MESSAGE_BODY+=$'    '
+            MESSAGE_BODY+="${LINE}"
+            MESSAGE_BODY+=$'\n'
+          done <<<"${NETWORK_INTERFACE_IPV4_ROUTES[$IFACE]}"
+        fi
+
+        if [[ -n "${NETWORK_INTERFACE_IPV6_ROUTES[$IFACE]:-}" ]]; then
+          MESSAGE_BODY+=$'  IPv6 routes:\n'
+          while IFS= read -r LINE; do
+            MESSAGE_BODY+=$'    '
+            MESSAGE_BODY+="${LINE}"
+            MESSAGE_BODY+=$'\n'
+          done <<<"${NETWORK_INTERFACE_IPV6_ROUTES[$IFACE]}"
+        fi
+
+        MESSAGE_BODY+=$'\n'
+      done
+    fi
+  fi
+
+  [[ "$MESSAGE_BODY" == *$'\n' ]] || MESSAGE_BODY+=$'\n'
+  printf '%s' "$MESSAGE_BODY" >"$INFO_FILE"
 
   if command -v whiptail >/dev/null 2>&1; then
     whiptail --backtitle "Raffo Setup" \
              --title "Network information" \
-             --textbox "$INFO_FILE" 25 90
+             --textbox "$INFO_FILE" 25 90 || true
   else
-    cat "$INFO_FILE"
+    printf '%s' "$MESSAGE_BODY"
   fi
 else
   if command -v whiptail >/dev/null 2>&1; then
