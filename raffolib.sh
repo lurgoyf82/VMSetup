@@ -249,7 +249,8 @@ ask_yesno() {
   local TITLE="$1"; local MESSAGE="$2"
   local HEIGHT="${3:-12}"; local WIDTH="${4:-65}"
   whiptail --backtitle "Raffo Setup" --title "$TITLE" \
-           --yesno "$MESSAGE" "$HEIGHT" "$WIDTH"
+           --yesno "$MESSAGE" "$HEIGHT" "$WIDTH" \
+           </dev/tty >/dev/tty 2>/dev/tty
 }
 
 ask_menu() {
@@ -262,7 +263,8 @@ ask_menu() {
     _raffo_calc_menu_size HEIGHT WIDTH LIST_HEIGHT "$ITEMS"
   fi
   whiptail --backtitle "Raffo Setup" --title "$TITLE" \
-           --menu "$MESSAGE" "$HEIGHT" "$WIDTH" "$LIST_HEIGHT" "$@" 3>&2 2>&1 1>&3
+           --menu "$MESSAGE" "$HEIGHT" "$WIDTH" "$LIST_HEIGHT" "$@" \
+           3>&2 4>&1 1>/dev/tty 2>/dev/tty 2>&4 1>&3 4>&- </dev/tty
 }
 
 ask_checklist() {
@@ -275,28 +277,32 @@ ask_checklist() {
     _raffo_calc_menu_size HEIGHT WIDTH LIST_HEIGHT "$ITEMS"
   fi
   whiptail --backtitle "Raffo Setup" --title "$TITLE" \
-           --checklist "$MESSAGE" "$HEIGHT" "$WIDTH" "$LIST_HEIGHT" "$@" 3>&2 2>&1 1>&3
+           --checklist "$MESSAGE" "$HEIGHT" "$WIDTH" "$LIST_HEIGHT" "$@" \
+           3>&2 4>&1 1>/dev/tty 2>/dev/tty 2>&4 1>&3 4>&- </dev/tty
 }
 
 ask_input() {
   local TITLE="$1"; local MESSAGE="$2"; local DEFAULT="${3:-}"
   local HEIGHT="${4:-10}"; local WIDTH="${5:-60}"
   whiptail --backtitle "Raffo Setup" --title "$TITLE" \
-           --inputbox "$MESSAGE" "$HEIGHT" "$WIDTH" "$DEFAULT" 3>&1 1>&2 2>&3
+           --inputbox "$MESSAGE" "$HEIGHT" "$WIDTH" "$DEFAULT" \
+           3>&1 1>/dev/tty 2>/dev/tty 1>&2 2>&3 </dev/tty
 }
 
 ask_password() {
   local TITLE="$1"; local MESSAGE="$2"; local DEFAULT="${3:-}"
   local HEIGHT="${4:-10}"; local WIDTH="${5:-60}"
   whiptail --backtitle "Raffo Setup" --title "$TITLE" \
-           --passwordbox "$MESSAGE" "$HEIGHT" "$WIDTH" "$DEFAULT" 3>&1 1>&2 2>&3
+           --passwordbox "$MESSAGE" "$HEIGHT" "$WIDTH" "$DEFAULT" \
+           3>&1 1>/dev/tty 2>/dev/tty 1>&2 2>&3 </dev/tty
 }
 
 show_message() {
   local TITLE="$1"; local MESSAGE="$2"
   local HEIGHT="${3:-12}"; local WIDTH="${4:-70}"
   whiptail --backtitle "Raffo Setup" --title "$TITLE" \
-           --msgbox "$MESSAGE" "$HEIGHT" "$WIDTH"
+           --msgbox "$MESSAGE" "$HEIGHT" "$WIDTH" \
+           </dev/tty >/dev/tty 2>/dev/tty
 }
 
 show_textbox() {
@@ -306,7 +312,8 @@ show_textbox() {
   if [[ "$SCROLL" == "1" ]]; then
     EXTRA=(--textbox "$FILE" "$HEIGHT" "$WIDTH" --scrolltext)
   fi
-  whiptail --backtitle "Raffo Setup" --title "$TITLE" "${EXTRA[@]}"
+  whiptail --backtitle "Raffo Setup" --title "$TITLE" "${EXTRA[@]}" \
+           </dev/tty >/dev/tty 2>/dev/tty
 }
 
 pause_for_ack() {
