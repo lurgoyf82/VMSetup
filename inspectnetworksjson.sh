@@ -7,8 +7,15 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=./inspectnetwork.sh
 source "$SCRIPT_DIR/inspectnetwork.sh"
 
+#
+# Array holding JSON snippets describing each detected network connection.
+#
 connections=()
 
+# json_escape VALUE
+# -----------------
+# Emit VALUE with JSON special characters escaped so that it can be safely
+# embedded inside string literals when constructing JSON manually.
 json_escape() {
   local value="$1"
   value=${value//\/\\}
@@ -19,6 +26,10 @@ json_escape() {
   printf '%s' "$value"
 }
 
+# json_array_from_string DATA
+# ---------------------------
+# Convert a newline separated DATA string into a JSON array. Empty DATA
+# becomes an empty array. Each line is JSON-escaped to preserve formatting.
 json_array_from_string() {
   local data="$1"
   local first=1
@@ -34,6 +45,11 @@ json_array_from_string() {
   printf ']'
 }
 
+# has_default_route FAMILY IFACE
+# ------------------------------
+# Return success when IFACE participates in a default route for the requested
+# address FAMILY ("4" for IPv4, "6" for IPv6). This relies on the global
+# NETWORK_DEFAULT_ROUTES_IPV{4,6} arrays populated by inspectnetwork.sh.
 has_default_route() {
   local family="$1"
   local iface="$2"
@@ -56,6 +72,10 @@ has_default_route() {
   return 1
 }
 
+# build_connection_json IFACE
+# ---------------------------
+# Generate a JSON object representing the collected details for IFACE. This
+# includes state, MTU, MAC address, addresses, routes, and default route flags.
 build_connection_json() {
   local iface="$1"
   local state="${NETWORK_INTERFACE_STATE[$iface]:-}"
@@ -111,6 +131,10 @@ build_connection_json() {
   printf '}'
 }
 
+# generate_connections
+# --------------------
+# Populate the global connections array with a JSON object for every detected
+# network interface.
 generate_connections() {
   connections=()
   local iface
@@ -120,6 +144,10 @@ generate_connections() {
   done
 }
 
+# dump_networks_shell
+# -------------------
+# Output shell declarations describing the collected networking information so
+# that other scripts can `source` them and consume the JSON payloads.
 dump_networks_shell() {
   local network_report_time="$NETWORK_REPORT_TIME"
   local network_error="$NETWORK_ERROR"
@@ -136,6 +164,9 @@ dump_networks_shell() {
     connections
 }
 
+# usage
+# -----
+# Print a short help message describing the available command line options.
 usage() {
   cat <<'USAGE'
 Usage: inspectnetworks.sh [--report | --dump-shell | --help]
@@ -146,6 +177,10 @@ Usage: inspectnetworks.sh [--report | --dump-shell | --help]
 USAGE
 }
 
+# inspectnetworks_main [ARGS]
+# ---------------------------
+# Entry point that processes CLI flags, collects network information, and
+# renders either a report or the shell-friendly data dump.
 inspectnetworks_main() {
   local mode="report"
 
