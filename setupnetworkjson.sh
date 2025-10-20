@@ -10,6 +10,9 @@ source "$SCRIPT_DIR/raffolib.sh"
 
 INSPECT_SCRIPT="$SCRIPT_DIR/inspectnetworksjson.sh"
 
+# Ensure the array exists even if the inspector fails to emit it, to avoid nounset errors.
+declare -a connections=()
+
 temp_files=()
 cleanup() {
   local file
@@ -44,6 +47,9 @@ load_network_payload() {
 
   # shellcheck disable=SC1090
   source "$data_file"
+
+  # If the sourced data didn't define the array for any reason, keep it as an empty array.
+  declare -p connections >/dev/null 2>&1 || declare -a connections=()
 }
 
 connection_summary() {
