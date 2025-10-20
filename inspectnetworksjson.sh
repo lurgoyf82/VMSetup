@@ -18,7 +18,8 @@ connections=()
 # embedded inside string literals when constructing JSON manually.
 json_escape() {
   local value="$1"
-  value=${value//\/\\}
+  # Escape backslashes first, then quotes and control characters.
+  value=${value//\\/\\\\}
   value=${value//\"/\\\"}
   value=${value//$'\n'/\\n}
   value=${value//$'\r'/\\r}
@@ -48,8 +49,7 @@ json_array_from_string() {
 # has_default_route FAMILY IFACE
 # ------------------------------
 # Return success when IFACE participates in a default route for the requested
-# address FAMILY ("4" for IPv4, "6" for IPv6). This relies on the global
-# NETWORK_DEFAULT_ROUTES_IPV{4,6} arrays populated by inspectnetwork.sh.
+# address FAMILY ("4" for IPv4, "6" for IPv6).
 has_default_route() {
   local family="$1"
   local iface="$2"
@@ -74,8 +74,7 @@ has_default_route() {
 
 # build_connection_json IFACE
 # ---------------------------
-# Generate a JSON object representing the collected details for IFACE. This
-# includes state, MTU, MAC address, addresses, routes, and default route flags.
+# Generate a JSON object representing the collected details for IFACE.
 build_connection_json() {
   local iface="$1"
   local state="${NETWORK_INTERFACE_STATE[$iface]:-}"
@@ -134,11 +133,52 @@ build_connection_json() {
 # generate_connections
 # --------------------
 # Populate the global connections array with a JSON object for every detected
-# network interface.
+# network interface. Works with indexed or associative maps; falls back to keys
+# of other per-interface maps.
 generate_connections() {
   connections=()
+
+  local -a iface_list=()
+  local decl
+
+  # Detect if NETWORK_INTERFACES is associative or indexed
+  if decl=$(declare -p NETWORK_INTERFACES 2>/dev/null); then
+    if [[ "$decl" == declare\ -A* ]]; then
+      local k
+      for k in "${!NETWORK_INTERFACES[@]}"; do
+        [[ -n "$k" ]] && iface_list+=("$k")
+      done
+    else
+      local v
+      for v in "${NETWORK_INTERFACES[@]}"; do
+        [[ -n "$v" ]] && iface_list+=("$v")
+      done
+    fi
+  fi
+
+  # Fallback: union of keys from known per-interface maps
+  if (( ${#iface_list[@]} == 0 )); then
+    declare -A seen=()
+    local src
+    for src in NETWORK_INTERFACE_STATE NETWORK_INTERFACE_MTU NETWORK_INTERFACE_MAC \
+               NETWORK_INTERFACE_IPV4_ADDRS NETWORK_INTERFACE_IPV6_ADDRS \
+               NETWORK_INTERFACE_IPV4_ROUTES NETWORK_INTERFACE_IPV6_ROUTES; do
+      if decl=$(declare -p "$src" 2>/dev/null) && [[ "$decl" == declare\ -A* ]]; then
+        # nameref to iterate keys dynamically
+        declare -n ref="$src"
+        local k
+        for k in "${!ref[@]}"; do
+          if [[ -n "$k" && -z "${seen[$k]:-}" ]]; then
+            seen[$k]=1
+            iface_list+=("$k")
+          fi
+        done
+      fi
+    done
+  fi
+
   local iface
-  for iface in "${NETWORK_INTERFACES[@]}"; do
+  for iface in "${iface_list[@]}"; do
     [[ -z "$iface" ]] && continue
     connections+=( "$(build_connection_json "$iface")" )
   done
@@ -166,10 +206,9 @@ dump_networks_shell() {
 
 # usage
 # -----
-# Print a short help message describing the available command line options.
 usage() {
   cat <<'USAGE'
-Usage: inspectnetworks.sh [--report | --dump-shell | --help]
+Usage: inspectnetworksjson.sh [--report | --dump-shell | --help]
 
   --report       Print a formatted network report (default when executed).
   --dump-shell   Output shell declarations with JSON-encoded network objects.
@@ -179,27 +218,15 @@ USAGE
 
 # inspectnetworks_main [ARGS]
 # ---------------------------
-# Entry point that processes CLI flags, collects network information, and
-# renders either a report or the shell-friendly data dump.
 inspectnetworks_main() {
   local mode="report"
 
   while [[ $# -gt 0 ]]; do
     case "$1" in
-      --report)
-        mode="report"
-        ;;
-      --dump-shell)
-        mode="dump-shell"
-        ;;
-      --help)
-        usage
-        return 0
-        ;;
-      *)
-        usage >&2
-        return 1
-        ;;
+      --report) mode="report" ;;
+      --dump-shell) mode="dump-shell" ;;
+      --help) usage; return 0 ;;
+      *) usage >&2; return 1 ;;
     esac
     shift
   done
@@ -207,15 +234,9 @@ inspectnetworks_main() {
   collect_network_info
 
   case "$mode" in
-    report)
-      render_network_report
-      ;;
-    dump-shell)
-      dump_networks_shell
-      ;;
-    *)
-      return 1
-      ;;
+    report) render_network_report ;;
+    dump-shell) dump_networks_shell ;;
+    *) return 1 ;;
   esac
 }
 
