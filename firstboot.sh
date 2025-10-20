@@ -23,7 +23,7 @@ declare -A MODULE_RESULTS=()
 MODULE_ORDER=()
 
 MODULE_DEFINITIONS=(
- "Network Configuration|Modify network interface addressing and DNS.\n \nDo you want to continue?|$SCRIPT_DIR/setupnetwork.sh"
+"Network Configuration|Modify network interface addressing and DNS.\n \nDo you want to continue?|$SCRIPT_DIR/setupnetworkjson.sh"
 "Network Configuration|Modify network interface addressing and DNS.\n \nDo you want to continue?|$SCRIPT_DIR/setupnetwork2.sh"
 "Network Configuration|Modify network interface addressing and DNS.\n \nDo you want to continue?|$SCRIPT_DIR/setupnetwork3.sh"
 )
