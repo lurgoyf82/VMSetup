@@ -11,9 +11,13 @@ Run the following as root on Debian/Ubuntu to bootstrap Raffo Setup and start th
 	if [ -d "/root/vmsetup" ]; then
 	  rm -rf "/root/vmsetup"
 	fi && \
-	git clone -b develop_network_20251019 https://github.com/lurgoyf82/VMSetup.git /root/vmsetup && \
+	git clone -b develop_network_20251020 https://github.com/lurgoyf82/VMSetup.git /root/vmsetup && \
 	chmod +x /root/vmsetup/firstboot.sh && \
 	bash /root/vmsetup/firstboot.sh
+```
+## Test Single Components
+```bash
+	bash /root/vmsetup/inspectnetworks.sh --report | head
 ```
 
 1. **System Updates** (`setupupdates.sh`)
